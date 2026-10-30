@@ -1,8 +1,25 @@
 # OpenBridge 🌉
 
+[![test](https://github.com/sukirman1901/OpenBridge/actions/workflows/test.yml/badge.svg)](https://github.com/sukirman1901/OpenBridge/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Telegram ⇄ OpenCode autonomous bot bridge** — a self-hosted Telegram bot that pairs with the [OpenCode](https://opencode.ai) API to run an autonomous agent: scheduled cron jobs, self-initiated conversation, a goal-driven task queue, and a silent-by-default etiquette in group chats. Pure Python standard library (no `pip install`), with SQLite as the single source of truth for state.
 
 > Bot names in the configuration (e.g. `Unabot`) are just **sample personas** — this project is open source: clone it, rename the persona and point `config.json` at your own bot token, and make the bot yours. 🤖
+
+## Architecture
+
+```mermaid
+flowchart LR
+    T["Telegram<br/>owner + group chats"] <-->|"long polling / send_message"| B[["bridge.py<br/>courier · sessions · guardrails"]]
+    C["cron scheduler<br/>(Asia/Jakarta, WIB)"] --> B
+    Q["task queue<br/>goal → plan → act → verify → report"] --> B
+    S[("SQLite store<br/>schedules · outbox<br/>seen · usage · chats · personas")] <--> B
+    B -->|"session briefing + context"| O["OpenCode API<br/>(one session per<br/>persona + chat)"]
+    O -->|"reply · SILENT / answer"| B
+```
+
+The two loops on your phone are lightweight: a per-bot **Telegram thread** (long poll) and **worker threads** (outbox, cron, initiative, task queue) sharing one SQLite database. All persistence goes through `store.py`, so every restart resumes cleanly from where it left off.
 
 ## Features
 
@@ -63,6 +80,10 @@ python3 -m unittest discover -p "test_*.py"
 - [x] Phase 3 — Autonomous task queue + initiative loop + rate limiter
 - [ ] Phase 4 — Cloud host (VPS/box) for 24/7 isolation
 - [ ] Phase 5 — Auto-provisioning of new bots (owner confirmation button)
+
+## Contributing
+
+PRs welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for the ground rules (stdlib-only, no secrets in git, English code) and [SECURITY.md](SECURITY.md) for the private vulnerability-reporting path.
 
 ## License
 
