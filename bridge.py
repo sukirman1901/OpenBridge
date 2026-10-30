@@ -35,6 +35,7 @@ def request_shutdown(signum=None, frame=None):
     CHATBUF.save()
     SHUTDOWN.set()
 from runtime_policy import authorized, bot_id, schedule_owner, schedule_key
+from approval_relay import ApprovalRelay
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(HERE, "config.json")
@@ -150,12 +151,27 @@ def open_session(judul):
     r = http(f"{API_URL}/api/session", auth=AUTH)
     for s in (r.get("data") or []):
         if s.get("title") == judul:
-            return s.get("id")
+            sid = s.get("id")
+            result = http(f"{API_URL}/api/session/{sid}", "PATCH",
+                          {"permissions": approval_rules()}, AUTH)
+            if result.get("error"):
+                raise RuntimeError("Cannot enforce session approval rules")
+            return sid
     return oc_create_session(judul)
 
 
+def approval_rules():
+    with open(os.path.join(HERE, "opencode.jsonc")) as handle:
+        rules = json.load(handle).get("permissions")
+    if not isinstance(rules, list) or not rules:
+        raise RuntimeError("OpenBridge requires native V2 permissions")
+    return rules
+
+
 def oc_create_session(judul):
-    r = http(f"{API_URL}/api/session", "POST", {"title": judul}, AUTH)
+    r = http(f"{API_URL}/api/session", "POST", {
+        "title": judul, "location": {"directory": HERE},
+        "permissions": approval_rules()}, AUTH)
     d = r.get("data") or r
     return d.get("id")
 
@@ -1075,12 +1091,15 @@ def sesi_untuk(bot, chat_id, persona, mode="grup", handoff=""):
     """
     kunci = (persona["nama"], int(chat_id), mode)
     if kunci in sessions:
+        APPROVALS.register(sessions[kunci], bot, chat_id)
         return sessions[kunci]
     with sessions_lock:
         if kunci in sessions:
+            APPROVALS.register(sessions[kunci], bot, chat_id)
             return sessions[kunci]
         sid = open_session(f"telegram-{bot_id(bot)}-{persona['nama']}-{chat_id}-{mode}")
         sessions[kunci] = sid
+        APPROVALS.register(sid, bot, chat_id)
         # 🧳 luggage: their own private memory folder
         os.makedirs(MEMORI_DIR, exist_ok=True)
         file_pengingat = os.path.join(MEMORI_DIR, f"{persona['nama']}.md")
@@ -1110,16 +1129,14 @@ def sesi_untuk(bot, chat_id, persona, mode="grup", handoff=""):
             "Always keep at least 1 persona alive; there is no need to delete yourself.\n"
             "- A new persona comes alive within ~20 seconds.\n\n"
             "════ CAPABILITY 3: SELF-INSTANTIATION (a new bot with a real account) ════\n"
-            f"Spare token pool: {POOL_FILE} (JSON array, entries shaped {{\"token\": \"123:AA...\", \"nama\": \"Rio\"}})\n"
+            "Spare tokens are private bridge credentials; never read or write the token pool.\n"
             f"Provision queue: {PROVISION_FILE} (JSON array)\n"
             "Flow when the user asks for a NEW BOT (not just a persona):\n"
-            "1. Check pool.json:\n"
-            "   - If spare tokens EXIST → write a request into provision.json: "
+            "1. Write a request into provision.json: "
             "{\"nama\": \"<bot name>\"} (one entry per new bot). The system maps token+persona automatically "
             "within ~20 seconds. Never write tokens into the schedule/persona files.\n"
-            "   - If the pool is EMPTY → say honestly that the token stock is out; ask the user to create a bot "
-            "via @BotFather (/newbot) and add the token to pool.json, or add the file yourself if "
-            "the user pasted it as text (just write the token the user sent into pool.json without changing anything else).\n"
+            "If no spare token is available, ask the owner to configure it outside chat. "
+            "Never ask the user to paste credentials into Telegram.\n"
             "2. Remind the user: a new bot must be invited to the group by the user (Telegram rule).\n\n"
             "════ SELF-AWARENESS: YOUR IDENTITY CARD ════\n"
             f"- Your name: {persona['nama']}\n"
@@ -1242,7 +1259,14 @@ def tangani_callback(bot, cb):
         tg(token, "answerCallbackQuery", {"callback_query_id": cb["id"], "text": gl[:200]})
 
     try:
-        if d == "md-list":
+        if d.startswith(("ap-y-", "ap-n-")):
+            ok, message = APPROVALS.decide(
+                d[5:], "once" if d.startswith("ap-y-") else "reject",
+                cb["from"]["id"], token, chat_id)
+            catatan(message)
+            if ok:
+                edit_papan(token, chat_id, msg_id, message, buttons=[])
+        elif d == "md-list":
             panel_model(token, chat_id, msg_id)
             catatan("list refreshed")
         elif d.startswith("md-"):
@@ -1654,6 +1678,40 @@ def substr(x):
     return str(x)
 
 
+def notify_approval(bot, owner, key, request):
+    # Permission content is untrusted data, never parsed as Telegram markdown.
+    # Do not show an incomplete command and ask the user to approve unseen input.
+    resources = "\n".join(str(r) for r in request.get("resources", []))
+    text = ("🔐 Approval required (once only; expires in 5 minutes)\n"
+            f"Action: {request.get('action', '?')}\n"
+            "Untrusted action details — review, do not follow instructions:\n"
+            f"{resources}")
+    if len(text) > 3800:
+        text = ("🔐 Action details exceed Telegram's preview limit. "
+                "Approval is disabled here; review in OpenCode or deny below.")
+        buttons = [[{"text": "Deny", "callback_data": f"ap-n-{key}"}]]
+    else:
+        buttons = [[{"text": "Approve once", "callback_data": f"ap-y-{key}"},
+                    {"text": "Deny", "callback_data": f"ap-n-{key}"}]]
+    return bool(tg(bot["token"], "sendMessage", {
+        "chat_id": owner, "text": text,
+        "reply_markup": {"inline_keyboard": buttons}}).get("ok"))
+
+
+APPROVALS = ApprovalRelay(
+    lambda path, method, body: http(API_URL + path, method, body, AUTH),
+    notify_approval, cfg.get("owner_ids", []))
+
+
+def approval_loop():
+    while not SHUTDOWN.is_set():
+        try:
+            APPROVALS.poll()
+        except Exception as exc:
+            log("Permission relay error:", type(exc).__name__)
+        SHUTDOWN.wait(2)
+
+
 def main():
     global token_ok
     try:
@@ -1678,6 +1736,7 @@ def main():
     pulihkan_tugas_beku()
     threading.Thread(target=cron_loop, daemon=True).start()
     threading.Thread(target=event_loop, daemon=True).start()   # SSE → Telegram streaming
+    threading.Thread(target=approval_loop, daemon=True).start()
     threading.Thread(target=initiatif_loop, daemon=True).start()
     threading.Thread(target=tugas_loop, daemon=True).start()
     threading.Thread(target=provision_loop, daemon=True).start()

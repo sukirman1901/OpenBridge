@@ -125,28 +125,25 @@ class TestBackupExcludesTokens(unittest.TestCase):
 
 
 class TestPermissionConfigSchema(unittest.TestCase):
-    """OpenCode reads a `permission` OBJECT keyed by tool name; an unknown
-    `permissions` ARRAY is silently ignored, which would leave every deny rule
-    dead. Guard the schema so it can't regress unnoticed."""
+    """Guard native OpenCode V2 permission rules (not V1 tool-name maps)."""
 
     def _load(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open(os.path.join(root, "opencode.jsonc")) as f:
             return json.load(f)
 
-    def test_uses_singular_permission_object(self):
+    def test_uses_v2_permissions_array(self):
         data = self._load()
-        self.assertNotIn("permissions", data,
-                         "the array form is not part of the OpenCode schema — remove it")
-        self.assertIn("permission", data)
-        self.assertIsInstance(data["permission"], dict)
+        self.assertNotIn("permission", data)
+        self.assertIsInstance(data["permissions"], list)
 
     def test_dangerous_rules_survive(self):
-        rules = self._load()["permission"]
-        self.assertEqual(rules["bash"].get("rm *"), "deny")
-        self.assertEqual(rules["bash"].get("sudo *"), "deny")
-        self.assertEqual(rules["edit"].get("**.token"), "deny")
-        self.assertEqual(rules["read"].get("*.env"), "deny")
+        rules = {(r['action'], r['resource']): r['effect']
+                 for r in self._load()['permissions']}
+        self.assertEqual(rules['shell', '*'], 'ask')
+        self.assertEqual(rules['edit', '*'], 'ask')
+        self.assertEqual(rules['shell', 'rm *'], 'deny')
+        self.assertEqual(rules['read', '*.token'], 'deny')
 
 
 if __name__ == "__main__":

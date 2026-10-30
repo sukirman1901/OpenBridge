@@ -110,7 +110,8 @@ Now DM your bot on Telegram — it runs the OpenCode agent behind the scenes: ch
 ## Security
 
 - Bot tokens **must never be written in plain text into `config.json`** — always use the `{file:botname.token}` indirection; `*.token` files are excluded by `.gitignore`.
-- A single owner is recognized via `owner_ids`; non-owner messages and callbacks are ignored (fail-closed), and dangerous provisioning actions require an explicit owner confirmation button.
+- A single owner is recognized via `owner_ids`; non-owner messages and callbacks are ignored (fail-closed). OpenCode V2 shell and file-edit permission requests are relayed to the owner's private Telegram chat with **Approve once / Deny** buttons. Start a private chat with the bot first. Requests expire after five minutes while the relay is running; during downtime they remain pending in OpenCode, never automatically approved. Provisioning has a separate confirmation flow.
+- Normal Telegram replies and status/progress messages remain automatic; approval of unsolicited outbound messages is not implemented. Shell approval grants the host user's authority for that command: these permissions and file modes are **not an OS sandbox**. Review commands carefully; subagents are disabled until child-session approval routing is supported.
 - Persona edits and deletions are recorded; daily state backups land in `backup/gb-YYYY-MM-DD.tar.gz` (7 kept).
 
 ## Structure

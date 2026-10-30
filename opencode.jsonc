@@ -3,36 +3,29 @@
   "experimental": {
     "todo": true
   },
-  "permission": {
-    "read": {
-      "*": "allow",
-      "*.env": "deny",
-      "*.env.*": "deny",
-      "**.token": "deny",
-      "**/token*": "deny"
-    },
-    "edit": {
-      "*": "allow",
-      "*.env": "deny",
-      "*.env.*": "deny",
-      "**.token": "deny",
-      "**/token*": "deny",
-      "backup/**": "deny"
-    },
-    "bash": {
-      "*": "allow",
-      "sudo": "deny",
-      "sudo *": "deny",
-      "rm": "deny",
-      "rm *": "deny",
-      "git push*": "deny"
-    },
-    "external_directory": {
-      "*": "ask"
-    },
-    "question": "allow",
-    "task": "allow"
-  },
+  "permissions": [
+    { "action": "*", "resource": "*", "effect": "ask" },
+    { "action": "read", "resource": "*", "effect": "allow" },
+    { "action": "glob", "resource": "*", "effect": "allow" },
+    { "action": "grep", "resource": "*", "effect": "allow" },
+    { "action": "websearch", "resource": "*", "effect": "allow" },
+    { "action": "webfetch", "resource": "*", "effect": "allow" },
+    { "action": "shell", "resource": "*", "effect": "ask" },
+    { "action": "edit", "resource": "*", "effect": "ask" },
+    { "action": "subagent", "resource": "*", "effect": "deny" },
+    { "action": "external_directory", "resource": "*", "effect": "ask" },
+    { "action": "shell", "resource": "sudo *", "effect": "deny" },
+    { "action": "shell", "resource": "rm *", "effect": "deny" },
+    { "action": "shell", "resource": "git push*", "effect": "deny" },
+    { "action": "read", "resource": "*.env*", "effect": "deny" },
+    { "action": "read", "resource": "*.token", "effect": "deny" },
+    { "action": "read", "resource": "*pool.json", "effect": "deny" },
+    { "action": "edit", "resource": "*.env*", "effect": "deny" },
+    { "action": "edit", "resource": "*.token", "effect": "deny" },
+    { "action": "edit", "resource": "*pool.json", "effect": "deny" },
+    { "action": "edit", "resource": "*opencode.json*", "effect": "deny" },
+    { "action": "edit", "resource": "backup/*", "effect": "deny" }
+  ],
   "commands": {
     "goal": {
       "description": "Continue the autonomous agent plan",

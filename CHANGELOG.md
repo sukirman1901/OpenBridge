@@ -5,6 +5,8 @@ All notable changes to OpenBridge are documented here. This project follows the 
 ## Unreleased
 
 ### Added
+- **V2 approval relay**: owner-only private Telegram Approve once / Deny buttons for pending permission requests from registered bridge sessions. Requests expire after five minutes and are rejected while the relay is running; network failures never grant approval. No durable `always` approvals are offered. Shell and file edits now require approval; unknown/MCP actions default to ask, and subagents are blocked until child-session routing is supported.
+- **Correction to the previous security pass**: native OpenCode V2 uses `permissions` arrays with `shell`/`subagent`. The previous switch to V1 `permission` maps was incorrect. Sessions now receive explicit V2 rules on creation/reuse; new sessions also specify the bridge location. Permission controls are not an OS sandbox.
 - **`OPENBRIDGE_SERVICE_JSON`** env var: point OpenBridge at an OpenCode server running on another host/port (default remains `~/.local/state/opencode/service.json`).
 - Friendly startup error with step-by-step instructions when the OpenCode server is not running yet.
 - README: full installation guide (install OpenCode → `opencode serve` → BotFather → `config.json` → `./start.sh`).
@@ -20,7 +22,7 @@ All notable changes to OpenBridge are documented here. This project follows the 
 - **`/new` command** — fresh context without losing the thread: the old session is compacted server-side, an auto-generated handoff summary (max 120 words) is carried into the new session; `/reset` still wipes fully.
 - **Auto-compact** — private chat sessions are compacted via OpenCode `POST /session/:id/compact` after a configurable number of turns (`compact_per_turns`, default 120) to keep the context window healthy over long running chats.
 - **Media janitor** — attachments in `media/` older than 7 days are removed during the daily backup sweep.
-- **Security hardening** — authorization now runs before any attachment download (strangers can no longer fill the disk with repeated 20 MB uploads), credential files (`*.token`, `pool.json`, `provision.json`) are chmod 600 at startup and never archived in daily backups, and the agent `opencode.jsonc` sample moved to the real OpenCode `permission` object schema (the plural-array form was silently ignored, which left every deny rule dead).
+- **Security hardening** — authorization runs before attachment downloads. Token files and `pool.json` are excluded from the backup file list; credential-bearing files are chmod 600 at startup. Backups can still contain sensitive configuration, memory, and database content and must be protected. Native V2 permission configuration is corrected in the approval-relay pass above.
 
 ## [0.1.0] — 2026-10-30
 
