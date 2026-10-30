@@ -13,6 +13,23 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _offline_service_file():
+    """bridge.py resolves the OpenCode server from the user's service.json at
+    import time; CI has none. Point OPENBRIDGE_SERVICE_JSON at an offline dummy
+    so the module can be imported without a live OpenCode install."""
+    real = os.path.expanduser("~/.local/state/opencode/service.json")
+    if "OPENBRIDGE_SERVICE_JSON" in os.environ or os.path.exists(real):
+        return
+    d = tempfile.mkdtemp(prefix="openbridge-test-")
+    p = os.path.join(d, "service.json")
+    with open(p, "w") as f:
+        json.dump({"url": "http://127.0.0.1:1", "password": "x"}, f)
+    os.environ["OPENBRIDGE_SERVICE_JSON"] = p
+
+
+_offline_service_file()
 import bridge  # noqa: E402
 
 
