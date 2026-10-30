@@ -29,5 +29,9 @@
   "provisioning_enabled": false,
   "rate_limiter": {
     "max_per_menit": 6
+  },
+  "tugas": {
+    "max_steps": 10,
+    "wait_detik": 240
   }
 }

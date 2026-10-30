@@ -13,3 +13,4 @@ backup/
 *.tar.gz
 __pycache__/
 *.pyc
+hasil/

@@ -702,11 +702,19 @@ def pulihkan_tugas_beku():
 
 
 def run_task(bot, t):
-    """Work through a single task with a bounded number of model calls; finished → report to the target chat."""
+    """Work through a single task with a bounded number of model calls; finished → report to the target chat.
+
+    Step budget and per-step wait come from config (tugas.max_steps / tugas.wait_detik,
+    defaults 10 × 240s) so autonomous work gets a real chance — chat brevity rules do not
+    apply inside the task session (see sesi_untuk work-mode briefing).
+    """
     bid = str(bot.get("bot_id") or bot["token"].split(":", 1)[0])
     chat_id = int(t["chat_id"])
     persona = {"nama": bot["nama"], "persona": bot.get("persona", "")}
-    maks = int(t.get("max_steps") or 5)
+    tugas_cfg = cfg.get("tugas") or {}
+    maks = int(t.get("max_steps") or tugas_cfg.get("max_steps", 10))
+    wait_detik = int(tugas_cfg.get("wait_detik", 240))
+    os.makedirs(os.path.join(HERE, "hasil"), exist_ok=True)
     try:
         sid = sesi_untuk(bot, chat_id, persona, "tugas")
         for langkah in range(maks):
@@ -719,16 +727,19 @@ def run_task(bot, t):
                 continue
             if langkah == 0:
                 prompt = (f"[TASK #{t['id']}] Goal: {t['goal']}\n"
-                        "This step: write a short PLAN (max 4 points), then START working on the first step "
-                        "with the tools in your session. Don't put it off until tomorrow.")
+                        f"You have {maks} steps total (this is step 1). "
+                        "Write a short PLAN (max 4 points) sized to that budget, then START working on the first step "
+                        "with the tools in your session. Deliverables → files under hasil/. "
+                        "Don't put it off until tomorrow.")
             elif langkah == maks - 1:
-                prompt = (f"[TASK #{t['id']}] This is the FINAL step. Verify the work you have already done, "
-                        "then write a final REPORT (what succeeded, what didn't, key evidence/values). "
+                prompt = (f"[TASK #{t['id']}] This is the FINAL step. Verify the work with a REAL check "
+                        "(run the test/command/re-count and capture its output as evidence — no claiming from memory), "
+                        "then write the final REPORT: what was produced, file paths under hasil/, key evidence/values. "
                         "Start your answer with DONE if the task is truly complete, or FAILED if it's impossible.")
             else:
                 prompt = (f"[TASK #{t['id']}] Keep working toward the goal: "
-                        f"{t['goal']}. Do the next step now, don't just talk.")
-            answer = oc_prompt(sid, prompt)
+                        f"{t['goal']} (step {langkah + 1}/{maks}). Do the next step with your tools now, don't just talk.")
+            answer = oc_prompt(sid, prompt, wait_detik)
             sisi = http(f"{API_URL}/api/session/{sid}", auth=AUTH)
             METER.extract_and_record(bid, sisi.get("data") or {})
             if not answer:
@@ -736,17 +747,17 @@ def run_task(bot, t):
             assessment = answer.strip().upper()
             if assessment.startswith(("SELESAI", "DONE")) or assessment.startswith(("GAGAL", "FAILED")):
                 if assessment.startswith(("SELESAI", "DONE")):
-                    TUGAS.complete(t["id"], answer[:2000])
-                    send_msg(bot["token"], chat_id, f"📋 Task #{t['id']} done ✅\n{answer[:1200]}")
+                    TUGAS.complete(t["id"], answer[:6000])
+                    send_msg(bot["token"], chat_id, f"📋 Task #{t['id']} done ✅\n{answer[:3500]}")
                 else:
-                    TUGAS.fail(t["id"], answer[:300])
-                    send_msg(bot["token"], chat_id, f"⚠️ Task #{t['id']} failed per the bot's own report.\n{answer[:600]}")
+                    TUGAS.fail(t["id"], answer[:600])
+                    send_msg(bot["token"], chat_id, f"⚠️ Task #{t['id']} failed per the bot's own report.\n{answer[:1500]}")
                 return
             if TUGAS.bump(t["id"]) == "full":
                 send_msg(bot["token"], chat_id, f"⚠️ Task #{t['id']} stopped: maximum number of steps ({maks}) reached.")
                 return
         TUGAS.complete(t["id"], "steps ran out without an explicit report — check the task session for details")
-        send_msg(bot["token"], chat_id, f"📋 Task #{t['id']} closed (step limit). Last output: {str(answer)[:400]}")
+        send_msg(bot["token"], chat_id, f"📋 Task #{t['id']} closed (step limit). Last output: {str(answer)[:800]}")
     except Exception as e:
         TUGAS.fail(t["id"], repr(e))
         log("❗ task error:", repr(e))
@@ -776,13 +787,20 @@ sessions_lock = threading.Lock()
 MULAI = time.time()
 
 def sesi_untuk(bot, chat_id, persona, mode="grup"):
-    kunci = (persona["nama"], int(chat_id))
+    """Persistent OpenCode session per (persona, chat, mode).
+
+    The `mode` is part of the key: casual chats keep the social briefing,
+    while `tugas`/`cron` sessions get a work-mode briefing (brevity rules
+    lifted, tools & verification encouraged) so autonomous work quality
+    matches a desktop OpenCode session.
+    """
+    kunci = (persona["nama"], int(chat_id), mode)
     if kunci in sessions:
         return sessions[kunci]
     with sessions_lock:
         if kunci in sessions:
             return sessions[kunci]
-        sid = open_session(f"telegram-{bot_id(bot)}-{persona['nama']}-{chat_id}")
+        sid = open_session(f"telegram-{bot_id(bot)}-{persona['nama']}-{chat_id}-{mode}")
         sessions[kunci] = sid
         # 🧳 luggage: their own private memory folder
         os.makedirs(MEMORI_DIR, exist_ok=True)
@@ -791,6 +809,7 @@ def sesi_untuk(bot, chat_id, persona, mode="grup"):
             with open(file_pengingat, "w") as f:
                 f.write(f"# Private memory of {persona['nama']}\n(written by you, for you)\n")
         saudara = [p["nama"] for p in muat_persona() if p["nama"] != persona["nama"]]
+        akhir = os.path.join(HERE, "hasil")  # deliverables land here in work mode
         briefing = (
             f"You are '{persona['nama']}', a member of a Telegram group.\n"
             f"Your persona: {persona['persona']}\n\n"
@@ -833,15 +852,34 @@ def sesi_untuk(bot, chat_id, persona, mode="grup"):
             " answer in a casual style; \n"
             "CAPABILITY 4: INTERNET — you have websearch tools inside your session; when the user needs fresh info\n"
             "(news, prices, sports results), use those tools, don't pretend to know.\n"
-            "════ HOW YOU SPEAK IN THE GROUP ════\n"
-            "- You do NOT reply to every message: when unaddressed, you listen and may stay SILENT.\n"
-            "- The bridge occasionally hands you fresh context, then waits for your decision: speak briefly OR answer SILENT.\n"
-            "- Your budget has a daily cap; when it runs out, stop honestly, don't make excuses.\n"
-            "At most ~4 sentences unless asked for a longer reply.\n"
-            "Reply with a short 'ready' to confirm this briefing."
         )
+        if mode in ("tugas", "cron"):
+            briefing += (
+                "════ WORK MODE (autonomous execution) ════\n"
+                "This session is for getting real work done, not for chatting. The chat brevity rules\n"
+                "do NOT apply here. Rules\n"
+                "- Use the tools in your session freely (read, write, edit, shell, websearch) to do the job —\n"
+                "  don't describe work, DO it.\n"
+                f"- Deliverables (reports, code, data files) go as files under    {akhir}\n"
+                "  create it if needed, then mention the file path in your final message.\n"
+                "- Verify before you claim done: run the actual check/test/counter-check and cite the\n"
+                "  evidence (command output, file path, numbers) — never assert from memory alone.\n"
+                "- You have a limited number of steps: budget them. If the goal can't be finished,\n"
+                "  finish the most valuable part and report honestly what is missing.\n"
+                "Final message: a compact REPORT with what was produced, file paths, and evidence.\n"
+                "Start it with DONE (complete) or FAILED (impossible).\n"
+            )
+        else:
+            briefing += (
+                "════ HOW YOU SPEAK IN THE GROUP ════\n"
+                "- You do NOT reply to every message: when unaddressed, you listen and may stay SILENT.\n"
+                "- The bridge occasionally hands you fresh context, then waits for your decision: speak briefly OR answer SILENT.\n"
+                "- Your budget has a daily cap; when it runs out, stop honestly, don't make excuses.\n"
+                "At most ~4 sentences unless asked for a longer reply.\n"
+            )
+        briefing += "Reply with a short 'ready' to confirm this briefing."
         returned = oc_prompt(sid, briefing, 90)
-        log(f"🧠 new session {persona['nama']} → {sid} (briefing ack: {returned or 'FAILED'})")
+        log(f"🧠 new session {persona['nama']} ({mode}) → {sid} (briefing ack: {returned or 'FAILED'})")
     return sid
 
 
