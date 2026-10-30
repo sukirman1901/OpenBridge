@@ -3,7 +3,7 @@
     {
       "token": "{file:unabot.token}",
       "nama": "Unabot",
-      "persona": "Kamu sobat grup yang cerdas, gaya ngobrol gaul santai, suka bercanda tapi tetap membantu. Jawab singkat, maksimal 3 kalimat, bahasa Indonesia."
+      "persona": "You are the group's smart, easygoing friend — a casual, witty chat buddy who loves to crack jokes but stays helpful. Keep replies short, at most 3 sentences."
     }
   ],
   "budget": {
@@ -20,7 +20,7 @@
       "aktif": false,
       "jam": "21:00",
       "chat_id": 0,
-      "prompt": "Kirim ringkasan singkat aktivitas grup hari ini, gaya santai, maksimal 4 kalimat, akhiri dengan emoji."
+      "prompt": "Send a short summary of today's group activity in a casual tone, max 4 sentences, ending with an emoji."
     }
   ],
   "owner_ids": [

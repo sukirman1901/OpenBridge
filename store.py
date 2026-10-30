@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Store — layer penyimpanan SQLite untuk bridge bot Telegram.
-Pengganti file-file JSON (cron.json, chats.json, dll) dengan satu database:
-- schedules : jadwal cron/once/interval per bot
-- outbox    : antrian kirim pesan (retry + backoff + dead-letter)
-- seen      : offset getUpdates terakhir per bot (tahan restart)
-- usage     : pemakaian per bot per hari (calls, cost, tokens)
+Store — SQLite storage layer for the Telegram bridge bot.
+Replaces the JSON files (cron.json, chats.json, etc.) with a single database:
+- schedules : cron/once/interval schedules per bot
+- outbox    : message send queue (retry + backoff + dead-letter)
+- seen      : last getUpdates offset per bot (survives restarts)
+- usage     : per-bot per-day usage (calls, cost, tokens)
 
-Atomic per operasi: satu koneksi check_same_thread=False + threading.Lock,
-tiap call = satu transaksi (execute + commit di bawah lock).
+Atomic per operation: a single connection with check_same_thread=False +
+threading.Lock, where each call is one transaction (execute + commit
+under the lock).
 """
 import os
 import sqlite3
@@ -18,7 +19,7 @@ from datetime import datetime
 
 KINDS = ("cron", "once", "interval")
 OUTBOX_STATUS = ("pending", "sent", "dead")
-MAX_BACKOFF = 300  # detik; attempt n → next_try = now + min(300, 2**n)
+MAX_BACKOFF = 300  # seconds; attempt n → next_try = now + min(300, 2**n)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schedules (
@@ -75,13 +76,13 @@ _NOW = "%Y-%m-%d %H:%M:%S"
 
 
 def iso_now(ts=None):
-    """Detik epoch → 'YYYY-MM-DD HH:MM:SS' (timezone lokal, sama gaya bridge)."""
+    """Epoch seconds → 'YYYY-MM-DD HH:MM:SS' (local timezone, same style as the bridge)."""
     return datetime.fromtimestamp(ts if ts is not None else time.time()).strftime(_NOW)
 
 
 def interval_seconds(expr):
-    """Parsing sederhana expr interval: '90' (detik) atau '5m','2h','3d'.
-    None kalau tidak bisa diparse — biarkan server yang evaluasi."""
+    """Simple parser for interval exprs: '90' (seconds) or '5m','2h','3d'.
+    None when it cannot be parsed — let the server evaluate it."""
     s = str(expr or "").strip().lower()
     if not s:
         return None
@@ -98,7 +99,7 @@ def interval_seconds(expr):
 
 
 class Store:
-    """Layer penyimpanan SQLite untuk bridge. path=None → database :memory:."""
+    """SQLite storage layer for the bridge. path=None → :memory: database."""
 
     def __init__(self, path=None):
         self._path = path or ":memory:"
@@ -113,14 +114,14 @@ class Store:
 
     # ── internal ─────────────────────────────────────────────────
     def _exec(self, sql, params=()):
-        """Tulis: satu transaksi atomic di bawah lock. Balikin cursor."""
+        """Writes: a single atomic transaction under the lock. Returns the cursor."""
         with self._lock:
             cur = self._db.execute(sql, params)
             self._db.commit()
             return cur
 
     def _query(self, sql, params=()):
-        """Baca: SELECT atomic di bawah lock. Balikin list dict."""
+        """Reads: atomic SELECT under the lock. Returns a list of dicts."""
         with self._lock:
             return [dict(r) for r in self._db.execute(sql, params).fetchall()]
 
@@ -139,9 +140,9 @@ class Store:
     # ── schedules ────────────────────────────────────────────────
     def add_schedule(self, bot_id, chat_id, expr, kind, prompt, tz="Asia/Jakarta",
                      active=1, now=None):
-        """Tambah jadwal, balikin id barunya. kind: 'cron' | 'once' | 'interval'."""
+        """Add a schedule and return its new id. kind: 'cron' | 'once' | 'interval'."""
         if kind not in KINDS:
-            raise ValueError(f"kind harus salah satu dari {KINDS}, dapat: {kind!r}")
+            raise ValueError(f"kind must be one of {KINDS}, got: {kind!r}")
         cur = self._exec(
             "INSERT INTO schedules(bot_id, chat_id, expr, kind, tz, prompt,"
             " active, last_fired, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -150,7 +151,7 @@ class Store:
         return cur.lastrowid
 
     def list_schedules(self, bot_id=None, active_only=False):
-        """Semua jadwal (opsional per bot). Untuk panel /jadwal."""
+        """All schedules (optionally per bot). For the /schedule panel."""
         q, p = [], []
         sql = "SELECT * FROM schedules"
         if bot_id is not None:
@@ -163,11 +164,11 @@ class Store:
         return self._query(sql, p)
 
     def due_schedules(self, bot_id=None, kind=None, now=None):
-        """Jadwal aktif yang jatuh tempo menurut kind.
-        - 'cron'    : dilempar apa adanya (pola HH:MM dievaluasi server).
-        - 'once'    : expr <= now dan belum pernah terbakar (last_fired NULL).
-        - 'interval': parsing sederhana detik/'m'/'h'/'d' vs last_fired;
-                      expr tak bisa diparse → diteruskan ke server.
+        """Active schedules that are due, according to kind.
+        - 'cron'    : passed through as-is (the server evaluates the HH:MM pattern).
+        - 'once'    : expr <= now and never fired yet (last_fired NULL).
+        - 'interval': simple seconds/'m'/'h'/'d' parsing vs last_fired;
+                      an expr that cannot be parsed is forwarded to the server.
         """
         now = now or datetime.now().strftime(_NOW)
         q, p = ["active = 1"], []
@@ -175,46 +176,46 @@ class Store:
             q.append("bot_id = ?"); p.append(str(bot_id))
         if kind is not None:
             if kind not in KINDS:
-                raise ValueError(f"kind tak dikenal: {kind!r}")
+                raise ValueError(f"unknown kind: {kind!r}")
             q.append("kind = ?"); p.append(kind)
         rows = self._query("SELECT * FROM schedules WHERE " + " AND ".join(q) + " ORDER BY id", p)
         if kind == "once":
             rows = [r for r in rows if (r["last_fired"] or "") == "" and str(r["expr"]) <= str(now)]
         elif kind == "interval":
-            kena = []
+            hit = []
             for r in rows:
                 detik = interval_seconds(r["expr"])
                 if detik is None:
-                    kena.append(r)  # server yang evaluasi
+                    hit.append(r)  # the server evaluates this one
                     continue
                 if not r["last_fired"]:
-                    kena.append(r)
+                    hit.append(r)
                     continue
                 try:
                     lalu = datetime.strptime(str(r["last_fired"]), _NOW).timestamp()
                 except ValueError:
-                    kena.append(r)
+                    hit.append(r)
                     continue
                 if time.time() - lalu >= detik:
-                    kena.append(r)
-            rows = kena
+                    hit.append(r)
+            rows = hit
         return rows
 
     def mark_fired(self, schedule_id, when=None):
-        """Catat jadwal sudah terbakar (last_fired). True kalau id-nya ada."""
+        """Record that a schedule has fired (last_fired). True when the id exists."""
         cur = self._exec("UPDATE schedules SET last_fired = ? WHERE id = ?",
                          (str(when) if when is not None else iso_now(), schedule_id))
         return cur.rowcount > 0
 
     def delete_schedule(self, schedule_id):
-        """Hapus jadwal. True kalau ada baris yang terbuang."""
+        """Delete a schedule. True when a row was actually removed."""
         return self._exec("DELETE FROM schedules WHERE id = ?", (schedule_id,)).rowcount > 0
 
     # ── outbox ───────────────────────────────────────────────────
     def enqueue(self, token, chat_id, text, now=None):
-        """Masukkan pesan ke antrian kirim. Idempoten: entri pending yang sama
-        (token, chat_id, text) tidak diduplikat — UPSERT, balikin id yang ada.
-        Pesan siap kirim langsung (next_try = now)."""
+        """Put a message into the send queue. Idempotent: an identical pending
+        entry (token, chat_id, text) is not duplicated — UPSERT, returns the
+        existing id. A message ready to send goes out immediately (next_try = now)."""
         t = time.time() if now is None else now
         with self._lock:
             ada = self._db.execute(
@@ -231,9 +232,9 @@ class Store:
             return cur.lastrowid
 
     def due_outbox(self, now=None, limit=None):
-        """Klaim pesan pending yang next_try-nya sudah lewat:
-        attempts+1 dan next_try mundur (backoff, attempt n → now + min(300, 2**n)).
-        Balikin pesan yang di-claim (at-least-once); final lewat mark_sent/mark_dead.
+        """Claim pending messages whose next_try has passed:
+        attempts+1 and next_try pushed forward (backoff, attempt n → now + min(300, 2**n)).
+        Returns the claimed messages (at-least-once); finalized via mark_sent/mark_dead.
         """
         t = time.time() if now is None else now
         with self._lock:
@@ -241,23 +242,23 @@ class Store:
                 "SELECT * FROM outbox WHERE status = 'pending' AND next_try <= ?"
                 " ORDER BY id" + (f" LIMIT {int(limit)}" if limit else ""),
                 (float(t),)).fetchall()
-            kena = []
+            hit = []
             for r in rows:
                 percobaan = r["attempts"] + 1
                 self._db.execute(
                     "UPDATE outbox SET attempts = ?, next_try = ? WHERE id = ?",
                     (percobaan, float(t) + min(MAX_BACKOFF, 2 ** percobaan), r["id"]))
-                kena.append(dict(r))
+                hit.append(dict(r))
             self._db.commit()
-            return kena
+            return hit
 
     def mark_sent(self, outbox_id):
-        """pending → sent. Idempoten: baris yang bukan pending tidak diubah."""
+        """pending → sent. Idempotent: a row that is not pending is left untouched."""
         return self._exec("UPDATE outbox SET status = 'sent' WHERE id = ?"
                           " AND status = 'pending'", (outbox_id,)).rowcount > 0
 
     def mark_dead(self, outbox_id):
-        """pending → dead (dead-letter setelah retry habis). Idempoten."""
+        """pending → dead (dead-letter after retries are exhausted). Idempotent."""
         return self._exec("UPDATE outbox SET status = 'dead' WHERE id = ?"
                           " AND status = 'pending'", (outbox_id,)).rowcount > 0
 
@@ -269,16 +270,16 @@ class Store:
         with self._lock:
             return self._db.execute(sql, p).fetchone()["n"]
 
-    # ── seen (offset getUpdates) ─────────────────────────────────
+    # ── seen (getUpdates offset) ─────────────────────────────────
     def set_offset(self, bot_id, update_id):
-        """Simpan offset getUpdates terakhir per bot. UPSERT idempoten."""
+        """Store the last getUpdates offset per bot. Idempotent UPSERT."""
         self._exec(
             "INSERT INTO seen(bot_id, last_update_id) VALUES(?,?)"
             " ON CONFLICT(bot_id) DO UPDATE SET last_update_id = excluded.last_update_id",
             (str(bot_id), int(update_id)))
 
     def get_offset(self, bot_id):
-        """Offset terakhir bot; 0 kalau belum pernah disimpan."""
+        """The bot's last offset; 0 when never stored."""
         with self._lock:
             r = self._db.execute("SELECT last_update_id FROM seen WHERE bot_id = ?",
                                  (str(bot_id),)).fetchone()
@@ -286,7 +287,7 @@ class Store:
 
     # ── usage ────────────────────────────────────────────────────
     def add_usage(self, bot_id, day, calls=0, cost=0.0, tokens=0):
-        """Tally pemakaian per bot per hari. UPSERT: nilai akumulasi (increment)."""
+        """Tally usage per bot per day. UPSERT: values accumulate (increment)."""
         self._exec(
             "INSERT INTO usage(bot_id, day, calls, cost, tokens) VALUES(?,?,?,?,?)"
             " ON CONFLICT(bot_id, day) DO UPDATE SET"
@@ -296,7 +297,7 @@ class Store:
             (str(bot_id), str(day), int(calls), float(cost), int(tokens)))
 
     def get_usage(self, bot_id, day=None):
-        """Pemakaian bot: dict hari tertentu (default nol) atau agregat semua hari."""
+        """Bot usage: a dict for a specific day (zero by default) or aggregated over all days."""
         with self._lock:
             if day is not None:
                 r = self._db.execute(
@@ -311,9 +312,9 @@ class Store:
         return {"bot_id": str(bot_id), "day": None, "calls": r["calls"],
                 "cost": r["cost"], "tokens": r["tokens"]}
 
-    # ── chats (daftar chat yang diketahui bridge) ────────────────
+    # ── chats (chats known to the bridge) ────────────────────────
     def save_chat(self, chat_id, judul, ts=None):
-        """Catat/upsert judul chat. chat_id disimpan sebagai string (JSON aman)."""
+        """Record/upsert a chat title. chat_id is stored as a string (JSON-safe)."""
         self._exec(
             "INSERT INTO chats(chat_id, judul, updated_at) VALUES(?,?,?)"
             " ON CONFLICT(chat_id) DO UPDATE SET"
@@ -321,27 +322,27 @@ class Store:
             (str(chat_id), str(judul), iso_now(ts)))
 
     def list_chats(self):
-        """Semua chat, terbaru duluan (rowid sebagai pemencet seri detik)."""
+        """All chats, newest first (rowid as a tiebreaker for equal seconds)."""
         return self._query(
             "SELECT chat_id, judul, updated_at FROM chats ORDER BY updated_at DESC, rowid DESC")
 
-    # ── personas (kepribadian per nama) ─────────────────────────
+    # ── personas (per name) ─────────────────────────────────────
     def upsert_persona(self, nama, persona, ts=None):
         if not nama or not persona:
-            raise ValueError("nama dan persona wajib diisi")
-        kini = iso_now(ts)
+            raise ValueError("both nama and persona are required")
+        now_ = iso_now(ts)
         self._exec(
             "INSERT INTO personas(nama, persona, created_at, updated_at) VALUES(?,?,?,?)"
             " ON CONFLICT(nama) DO UPDATE SET"
             " persona = excluded.persona, updated_at = excluded.updated_at",
-            (str(nama), str(persona), kini, kini))
+            (str(nama), str(persona), now_, now_))
 
     def list_personas(self):
-        """Semua persona terdaftar urut nama (dict: nama, persona, created_at, updated_at)."""
+        """All registered personas sorted by name (dicts: nama, persona, created_at, updated_at)."""
         return self._query(
             "SELECT nama, persona, created_at, updated_at FROM personas ORDER BY nama")
 
-    def hapus_persona(self, nama):
-        """Buang persona. Arsip TIDAK dilakukan di sini — pemanggil (bridge) yang menulis jejak."""
+    def delete_persona(self, nama):
+        """Remove a persona. Archiving does NOT happen here — the caller (the bridge) writes the trail."""
         cur = self._exec("DELETE FROM personas WHERE nama = ?", (str(nama),))
         return cur.rowcount > 0

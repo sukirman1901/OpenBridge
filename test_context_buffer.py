@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tes untuk context_buffer.ChatBuffer — ring buffer konteks per-chat."""
+"""Tests for context_buffer.ChatBuffer — per-chat context ring buffer."""
 import json
 import os
 import random
@@ -15,63 +15,63 @@ class ChatBufferTest(unittest.TestCase):
     def test_maxlen_membuang_paling_tua(self):
         b = ChatBuffer(maxlen=3)
         for i in range(5):
-            b.append(1, "user", f"pesan-{i}")
+            b.append(1, "user", f"message-{i}")
         hasil = b.recent(1)
         self.assertEqual(len(hasil), 3)
-        self.assertEqual([e["text"] for e in hasil], ["pesan-2", "pesan-3", "pesan-4"])
+        self.assertEqual([e["text"] for e in hasil], ["message-2", "message-3", "message-4"])
 
     def test_urutan_kronologis(self):
         b = ChatBuffer(maxlen=10)
-        b.append(42, "user", "pertama", ts=1000.0)
-        b.append(42, "bot", "kedua", ts=2000.0)
-        b.append(42, "user", "ketiga", ts=3000.0)
+        b.append(42, "user", "first", ts=1000.0)
+        b.append(42, "bot", "second", ts=2000.0)
+        b.append(42, "user", "third", ts=3000.0)
         hasil = b.recent(42)
-        self.assertEqual([e["text"] for e in hasil], ["pertama", "kedua", "ketiga"])
+        self.assertEqual([e["text"] for e in hasil], ["first", "second", "third"])
         self.assertEqual([e["role"] for e in hasil], ["user", "bot", "user"])
-        # recent(n) → n terakhir, tetap urut lama→baru
+        # recent(n) → the last n, still ordered oldest→newest
         potong = b.recent(42, 2)
-        self.assertEqual([e["text"] for e in potong], ["kedua", "ketiga"])
+        self.assertEqual([e["text"] for e in potong], ["second", "third"])
 
     def test_role_invalid_ditolak(self):
         b = ChatBuffer(maxlen=5)
-        self.assertFalse(b.append(1, "admin", "halo"))
-        self.assertFalse(b.append(1, "", "halo"))
+        self.assertFalse(b.append(1, "admin", "hello"))
+        self.assertFalse(b.append(1, "", "hello"))
         self.assertEqual(b.recent(1), [])
 
-    def test_chat_terpisah(self):
+    def test_chats_are_separate(self):
         b = ChatBuffer(maxlen=5)
-        b.append("a", "user", "di-A")
-        b.append("b", "user", "di-B")
-        self.assertEqual([e["text"] for e in b.recent("a")], ["di-A"])
-        self.assertEqual([e["text"] for e in b.recent(987)], [])  # chat hampa → []
+        b.append("a", "user", "in A")
+        b.append("b", "user", "in B")
+        self.assertEqual([e["text"] for e in b.recent("a")], ["in A"])
+        self.assertEqual([e["text"] for e in b.recent(987)], [])  # empty chat → []
 
     def test_format_context(self):
         b = ChatBuffer(maxlen=10)
-        b.append(7, "user", "pagi dunia", name="Sinta", ts="2026-10-30 07:05:00")
-        b.append(7, "bot", "morning!", name="Rio", ts="2026-10-30T07:46:00")
+        b.append(7, "user", "morning world", name="Sinta", ts="2026-10-30 07:05:00")
+        b.append(7, "bot", "good morning!", name="Rio", ts="2026-10-30T07:46:00")
         teks = b.format_context(7)
-        self.assertIn("[07:05] Sinta: pagi dunia", teks)
-        self.assertIn("[07:46] Rio: morning!", teks)
+        self.assertIn("[07:05] Sinta: morning world", teks)
+        self.assertIn("[07:46] Rio: good morning!", teks)
         self.assertEqual(len(teks.splitlines()), 2)
 
-    def test_format_context_potong_panjang(self):
+    def test_format_context_truncates_long(self):
         b = ChatBuffer(maxlen=10)
         panjang = "x" * 300
         b.append(9, "user", panjang, name="Beta", ts=1000.0)
         baris = b.format_context(9)
-        # teks >120 char dipotong (dengan penanda), 1 baris saja
+        # text longer than 120 chars is clipped (with the marker), a single line only
         self.assertEqual(len(baris.splitlines()), 1)
         self.assertIn("Beta", baris)
         self.assertIn("…", baris)
-        self.assertNotIn("x" * 121, baris)  # pasti tidak utuh
-        self.assertLessEqual(len(baris), 140)  # prefix "[HH:MM] nama: " + 121
+        self.assertNotIn("x" * 121, baris)  # definitely not intact
+        self.assertLessEqual(len(baris), 140)  # prefix "[HH:MM] name: " + 121
         self.assertGreaterEqual(baris.count("x"), 120)
 
-    def test_format_context_kosong_kosong_string(self):
+    def test_format_context_empty_returns_string(self):
         b = ChatBuffer(maxlen=10)
         self.assertEqual(b.format_context(404), "")
-        # chat ada tapi buffer dibersihkan dengan maxlen kecil juga aman
-        b.append(405, "user", "satu")
+        # a chat that exists but whose buffer was emptied via a small maxlen is safe too
+        b.append(405, "user", "one")
         self.assertNotEqual(b.format_context(405), "")
 
     def test_save_load_roundtrip(self):
@@ -79,39 +79,39 @@ class ChatBufferTest(unittest.TestCase):
         os.close(fd)
         try:
             b1 = ChatBuffer(maxlen=40, snapshot_path=path)
-            b1.append(11, "user", "halo lama", name="Ayu", ts=1700000100.0)
-            b1.append(11, "bot", "halo balik", name="Rio", ts=1700000160.0)
-            b1.append(22, "user", "chat lain", name="Cika", ts=1700000200.0)
+            b1.append(11, "user", "old hello", name="Ayu", ts=1700000100.0)
+            b1.append(11, "bot", "hello back", name="Rio", ts=1700000160.0)
+            b1.append(22, "user", "another chat", name="Cika", ts=1700000200.0)
             self.assertTrue(b1.save())
 
             b2 = ChatBuffer(maxlen=40, snapshot_path=path)
             self.assertTrue(b2.load())
             self.assertEqual([e["text"] for e in b2.recent(11)],
-                             ["halo lama", "halo balik"])
+                             ["old hello", "hello back"])
             self.assertEqual(b2.recent(11)[0]["name"], "Ayu")
-            self.assertEqual([e["text"] for e in b2.recent(22)], ["chat lain"])
-            # format tetap benar setelah load
+            self.assertEqual([e["text"] for e in b2.recent(22)], ["another chat"])
+            # the format is still correct after load
             self.assertIn("Rio", b2.format_context(11))
         finally:
             if os.path.exists(path):
                 os.remove(path)
 
-    def test_load_rusak_tanpa_exception(self):
+    def test_load_corrupt_without_exception(self):
         fd, path = tempfile.mkstemp(suffix=".json")
         os.close(fd)
         try:
             with open(path, "w") as f:
-                f.write("{ini bukan json,,,[")
+                f.write("{this is not json,,,[")
             b = ChatBuffer(maxlen=5, snapshot_path=path)
-            self.assertFalse(b.load())  # tidak melempar
+            self.assertFalse(b.load())  # does not raise
             self.assertEqual(b.recent(1), [])
-            # JSON valid tapi bentuk aneh juga ditoleransi
+            # valid JSON with a wrong shape is tolerated as well
             with open(path, "w") as f:
-                json.dump(["bukan", "dict"], f)
+                json.dump(["not", "a-dict"], f)
             self.assertFalse(b.load())
             with open(path, "w") as f:
-                json.dump({"1": "bukan-list"}, f)
-            b.load()  # entri anomali dibuang tanpa exception
+                json.dump({"1": "not-a-list"}, f)
+            b.load()  # anomalous entries dropped without raising
             self.assertEqual(b.recent(1), [])
         finally:
             if os.path.exists(path):

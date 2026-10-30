@@ -1,4 +1,4 @@
-# unittest untuk usage_meter.py — meteran budget harian
+# unittest for usage_meter.py — daily budget meter
 import json
 import os
 import tempfile
@@ -9,13 +9,13 @@ import usage_meter
 from usage_meter import UsageMeter
 
 
-def hari(tanggal):
-    """Patch jam lokal: paksa meteran melihat 'tanggal' tertentu."""
-    return patch.object(usage_meter, "lokal_hari", lambda ts=None: tanggal)
+def day(tanggal):
+    """Patch the local clock: force the meter to see a given 'date'."""
+    return patch.object(usage_meter, "local_day", lambda ts=None: tanggal)
 
 
 def sampel_sesi():
-    """Bentuk yang sudah diamati dari OpenCode."""
+    """The shape actually observed from OpenCode."""
     return {
         "id": "ses-1",
         "cost": 0.05,
@@ -41,14 +41,14 @@ class TestUsageMeter(unittest.TestCase):
 
     def test_2_pisah_hari_beda(self):
         m = UsageMeter()
-        with hari("2026-01-01"):
+        with day("2026-01-01"):
             m.record("botA", calls=1, cost=0.10, tokens=10)
-        with hari("2026-01-02"):
-            # hari baru: mulai dari nol (mekaris sendiri)
+        with day("2026-01-02"):
+            # new day: starts from zero (metrologically clean)
             self.assertEqual(m.today("botA"), {"calls": 0, "cost": 0.0, "tokens": 0})
             m.record("botA", calls=1, cost=0.20, tokens=20)
             self.assertEqual(m.today("botA"), {"calls": 1, "cost": 0.20, "tokens": 20})
-        # hari lama tetap tersimpan di struktur
+        # the old day remains stored in the structure
         self.assertEqual(m._data["2026-01-01"]["botA"]["cost"], 0.10)
         self.assertEqual(m._data["2026-01-02"]["botA"]["tokens"], 20)
 
@@ -61,11 +61,11 @@ class TestUsageMeter(unittest.TestCase):
 
     def test_4_extract_field_hilang_dan_bentuk_aneh(self):
         m = UsageMeter()
-        # dict kosong, None, sampah, dan message punya 'model' + pembungkus data
+        # empty dict, None, junk, and a message with 'model' + a data wrapper
         m.extract_and_record("botA", {})
         m.extract_and_record("botB", None)
-        m.extract_and_record("botC", "bukan-dict")
-        m.extract_and_record("botA", {"model": "x/y", "tokens": "rusak"})
+        m.extract_and_record("botC", "not-a-dict")
+        m.extract_and_record("botA", {"model": "x/y", "tokens": "broken"})
         m.extract_and_record("botA", {"data": {"cost": 0.02,
                                                "tokens": {"input": 10}}})
         self.assertEqual(m.today("botA")["calls"], 3)
@@ -76,12 +76,12 @@ class TestUsageMeter(unittest.TestCase):
     def test_5_over_budget_tepat_di_batas(self):
         m = UsageMeter(daily_call_cap=5, daily_cost_cap=1.0)
         m.record("botA", calls=4, cost=0.80)
-        # kandidat yang pas mengisi sisa → masih boleh
+        # a candidate that exactly fills the remainder → still allowed
         self.assertFalse(m.over_budget("botA", calls=1, cost=0.20))
-        # satu lagi melewati batas → tertolak (calls & cost)
+        # one more would cross the limit → rejected (calls & cost)
         self.assertTrue(m.over_budget("botA", calls=2))
         self.assertTrue(m.over_budget("botA", cost=0.21))
-        m.record("botA", calls=1, cost=0.20)  # sekarang persis di batas
+        m.record("botA", calls=1, cost=0.20)  # now exactly at the limit
         self.assertFalse(m.over_budget("botA"))
         self.assertTrue(m.over_budget("botA", calls=1, cost=0.001))
 
@@ -94,7 +94,7 @@ class TestUsageMeter(unittest.TestCase):
         m1 = UsageMeter(path=self.path)
         m1.record("botA", calls=2, cost=0.15, tokens=75)
         m1.record("botB", calls=1, cost=0.05, tokens=5)
-        # meteran baru dari file yang sama melihat data yang sama
+        # a new meter from the same file sees the same data
         m2 = UsageMeter(path=self.path)
         self.assertEqual(m2.today("botA"),
                          {"calls": 2, "cost": 0.15, "tokens": 75})
@@ -102,11 +102,11 @@ class TestUsageMeter(unittest.TestCase):
 
     def test_8_file_rusak_mulai_bersih(self):
         with open(self.path, "w") as f:
-            f.write("{ini bukan json!!!")
-        m = UsageMeter(path=self.path)  # tidak boleh exception
+            f.write("{this is not json!!!")
+        m = UsageMeter(path=self.path)  # must not raise
         self.assertEqual(m.today("botA"), {"calls": 0, "cost": 0.0, "tokens": 0})
         m.record("botA", calls=1, cost=0.01, tokens=3)
-        # data baru harus tetap bisa ditulis & dibaca ulang
+        # new data must still be writeable & readable again
         m2 = UsageMeter(path=self.path)
         self.assertEqual(m2.today("botA")["calls"], 1)
 

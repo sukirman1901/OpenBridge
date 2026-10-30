@@ -1,2 +1,2 @@
-# Ingatan pribadi Unabot
-(ditulis olehmu untukmu)
+# Unabot's private memory
+(written by you, for you)

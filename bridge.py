@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-OpenCode GroupBot Bridge — multi-persona ala GrokBot
-Fitur:
-- Chat bebas dengan otak OpenCode (sesi per persona/chat)
-- Multi-persona: kelola LEWAT CHAT ("bikin persona baru: Senja, ...") via personas.json
-- Slash commands + tombol inline (/model /agent /persona /jadwal /status /reset)
-- Jadwal/cron natural → SQLite (schedules); cron.json hanya kotak masuk
-- Mode [DIAM] default + loop inisiatif; budget harian + rate limiter per menit
-- Split persona ↔ token: token≥persona → tiap persona punya bot asli sendiri
-Jalankan: ./start.sh
+OpenCode GroupBot Bridge — multi-persona, GrokBot-style
+What this file does (for new contributors):
+- Free chat with an OpenCode brain (one session per persona/chat)
+- Multi-persona: managed through chat ("new persona: Senja, ...") via personas.json
+- Slash commands + inline button panels (/model /agent /persona /jadwal /status /reset)
+- Natural-language schedules → SQLite (schedules); cron.json is only an inbox
+- [SILENT] default mode + initiative loop; daily budget + per-minute rate limiter
+- Persona ↔ token split: token≥persona → each persona gets its own real Telegram bot
+Run: ./start.sh
 """
 import json
 import os
@@ -24,13 +24,13 @@ from store import Store
 
 SHUTDOWN = threading.Event()
 SHUTDOWN_WAIT = 25
-PESAN_BARU = {}          # chat_id → {"bot": …, "ts": epoch} — aktivitas grup yang belum digapai
-INISIATIF_TERAKHIR = {}  # chat_id → epoch inisiatif terakhir
+PESAN_BARU = {}          # chat_id → {"bot": …, "ts": epoch} — group activity not yet attended
+INISIATIF_TERAKHIR = {}  # chat_id → epoch of the last initiative
 
 def request_shutdown(signum=None, frame=None):
     if SHUTDOWN.is_set():
         return
-    log("🛑 sinyal mati diterima, tutup rapi...")
+    log("🛑 shutdown signal received, closing cleanly...")
     CHATBUF.save()
     SHUTDOWN.set()
 from runtime_policy import authorized, bot_id, schedule_owner, schedule_key
@@ -49,8 +49,8 @@ LOG = os.path.join(HERE, "bridge.log")
 cfg = json.load(open(CONFIG))
 
 
-def resolusi_token(t):
-    """{file:namafile} → isi file (token tidak lagi plaintext di config.json)."""
+def resolve_token(t):
+    """{file:filename} → file contents (tokens no longer stored as plaintext in config.json)."""
     if isinstance(t, str) and t.startswith("{file:") and t.endswith("}"):
         try:
             isi = open(os.path.join(HERE, t[6:-1])).read().strip()
@@ -60,7 +60,7 @@ def resolusi_token(t):
     return t or ""
 
 for _b in cfg.get("bots", []):
-    _b["token"] = resolusi_token(_b.get("token"))
+    _b["token"] = resolve_token(_b.get("token"))
 
 api_pw = json.load(open(SERVICE))
 API_URL = api_pw["url"].rstrip("/")
@@ -76,12 +76,12 @@ try:
     from task_queue import TaskQueue
     TUGAS = TaskQueue(os.path.join(HERE, "groupbot.db"))
 except Exception:
-    TUGAS = None  # modul belum siap → antrean tugas nonaktif
+    TUGAS = None  # module not ready yet → task queue disabled
 try:
     from rate_limiter import RateLimiter
     RATE = RateLimiter(max_per_menit=(cfg.get("rate_limiter") or {}).get("max_per_menit", 6),
                        path=os.path.join(HERE, "rate.json"))
-except Exception:  # modul belum siap → jalan tanpa penguat menit
+except Exception:  # module not ready yet → run without the per-minute throttle
     RATE = None
 
 
@@ -118,9 +118,9 @@ def http(url, method="GET", body=None, auth=None, timeout=45):
             time.sleep(2)
 
 
-# ── OpenCode (otak) ──────────────────────────────────────────────
-def mulai_sesi(judul):
-    """Buat sesi, tapi kalau ada sesi lama dengan judul sama → pakai itu (memori tahan restart)."""
+# ── OpenCode (the brain) ─────────────────────────────────────────
+def open_session(judul):
+    """Create a session, but if an earlier session with the same title exists → reuse it (memory survives restarts)."""
     r = http(f"{API_URL}/api/session", auth=AUTH)
     for s in (r.get("data") or []):
         if s.get("title") == judul:
@@ -135,17 +135,17 @@ def oc_create_session(judul):
 
 
 def oc_prompt(sid, text, wait_detik=120):
-    sebelum = {m.get("id") for m in
+    before = {m.get("id") for m in
                (http(f"{API_URL}/api/session/{sid}/message", auth=AUTH).get("data") or [])}
     http(f"{API_URL}/api/session/{sid}/prompt", "POST", {"text": text}, AUTH)
     deadline = time.time() + wait_detik
     while time.time() < deadline:
         for m in reversed((http(f"{API_URL}/api/session/{sid}/message", auth=AUTH).get("data") or [])):
-            if m.get("type") == "assistant" and m.get("id") not in sebelum:
+            if m.get("type") == "assistant" and m.get("id") not in before:
                 parts = [p.get("text", "") for p in m.get("content", []) if p.get("type") == "text"]
-                teks = " ".join(parts).strip()
-                if teks:
-                    return teks[:cfg["trigger"].get("max_char_reply", 1500)]
+                text = " ".join(parts).strip()
+                if text:
+                    return text[:cfg["trigger"].get("max_char_reply", 1500)]
         time.sleep(1.5)
     return None
 
@@ -172,33 +172,33 @@ def tg(token, metode, payload=None, timeout=45):
     return http(TG.format(token, metode), "POST" if payload else "GET", payload, timeout=timeout)
 
 
-def kirim(token, chat_id, teks, tombol=None, kolom=2):
-    if not tombol:
-        for i in range(0, len(teks), 3500):
-            r = tg(token, "sendMessage", {"chat_id": chat_id, "text": teks[i:i + 3500]})
+def send_msg(token, chat_id, text, buttons=None, cols=2):
+    if not buttons:
+        for i in range(0, len(text), 3500):
+            r = tg(token, "sendMessage", {"chat_id": chat_id, "text": text[i:i + 3500]})
             if r.get("ok"):
-                log("✅ terkirim ke", chat_id)
+                log("✅ delivered to", chat_id)
             else:
-                # buang ke outbox: biar nggak hilang, nanti diulang dengan backoff
-                STORE.enqueue(token, chat_id, teks[i:i + 3500])
-                log("🧵 gagal langsung → masuk outbox:", str(r)[:100])
+                # drop it into the outbox: nothing is lost, retried later with backoff
+                STORE.enqueue(token, chat_id, text[i:i + 3500])
+                log("🧵 direct send failed → queued to outbox:", str(r)[:100])
         return
-    baris = []
-    for i in range(0, len(tombol), kolom):
-        baris.append([{"text": l, "callback_data": c} for l, c in tombol[i:i + kolom]])
+    line = []
+    for i in range(0, len(buttons), cols):
+        line.append([{"text": l, "callback_data": c} for l, c in buttons[i:i + cols]])
     r = tg(token, "sendMessage",
-           {"chat_id": chat_id, "text": teks, "reply_markup": {"inline_keyboard": baris}})
+           {"chat_id": chat_id, "text": text, "reply_markup": {"inline_keyboard": line}})
     if not r.get("ok"):
-        log("❌ gagal kirim papan:", str(r)[:150])
+        log("❌ failed to send panel:", str(r)[:150])
 
 
-def edit_papan(token, chat_id, msg_id, teks, tombol=None, kolom=2):
-    req = {"chat_id": chat_id, "message_id": msg_id, "text": teks[:4000]}
-    if tombol:
-        baris = []
-        for i in range(0, len(tombol), kolom):
-            baris.append([{"text": l, "callback_data": c} for l, c in tombol[i:i + kolom]])
-        req["reply_markup"] = {"inline_keyboard": baris}
+def edit_papan(token, chat_id, msg_id, text, buttons=None, cols=2):
+    req = {"chat_id": chat_id, "message_id": msg_id, "text": text[:4000]}
+    if buttons:
+        line = []
+        for i in range(0, len(buttons), cols):
+            line.append([{"text": l, "callback_data": c} for l, c in buttons[i:i + cols]])
+        req["reply_markup"] = {"inline_keyboard": line}
     r = tg(token, "editMessageText", req)
     if not r.get("ok"):
         log("✏️ edit:", str(r)[:100])
@@ -209,7 +209,7 @@ def simpan_chat(chat_id, judul):
 
 
 def pulih_chats_json():
-    """Migrasi chats.json warisan → tabel chats (sekali); file diarsipkan .imported."""
+    """Migrate legacy chats.json → chats table (once); the file is archived as .imported."""
     if not os.path.exists(CHAT_DB):
         return
     isi = {}
@@ -225,15 +225,15 @@ def pulih_chats_json():
         except Exception:
             continue
     os.replace(CHAT_DB, CHAT_DB + ".imported")
-    log(f"🗂 chats.json dimigrasi ke SQLite ({len(isi)} chat).")
+    log(f"🗂 chats.json migrated to SQLite ({len(isi)} chats).")
 
 
 def sinkron_persona():
-    """personas.json = kotak masuk model; DB = kebenaran; file ditera ulang jadi cermin.
+    """personas.json is the model's inbox; the DB is the source of truth; the file is rewritten as a mirror.
 
-    Aturan main:
-    - File terbaca valid → upsert semua ke DB; persona DB yang hilang dari file = dihapus (diarsip).
-    - File gagal dibaca/corrupt → JANGAN sentuh DB (antisipasi hapus massal gara-gara tulis rusak).
+    Rules of engagement:
+    - File reads valid → upsert everything into the DB; a DB persona missing from the file is dropped (archived).
+    - File unreadable/corrupt → DO NOT touch the DB (guards against mass deletion from a torn write).
     """
     isi, terbaca_ok, berkasada = [], False, os.path.exists(PERSONA_FILE)
     if berkasada:
@@ -245,16 +245,16 @@ def sinkron_persona():
         except Exception:
             terbaca_ok = False
     if berkasada and not terbaca_ok:
-        return  # file sedang rusak/setengah ditulis → tunggu, jangan ambil keputusan
+        return  # file corrupt / half-written → wait, don't make any decision
     if berkasada:
         for p in isi:
             STORE.upsert_persona(p["nama"].strip(), str(p["persona"]))
         nama_file = {p["nama"].strip() for p in isi}
         for p in STORE.list_personas():
-            if p["nama"] not in nama_file:  # dibuang dari file oleh model → matikan
+            if p["nama"] not in nama_file:  # dropped from the file by the model → kill it
                 if arsip_persona(p["nama"], p["persona"]):
-                    STORE.hapus_persona(p["nama"])
-                    log(f"🪦 persona '{p['nama']}' dihapus (tidak ada di file) — diarsip")
+                    STORE.delete_persona(p["nama"])
+                    log(f"🪦 persona '{p['nama']}' removed (missing from file) — archived")
     cermin = [{"nama": p["nama"], "persona": p["persona"]} for p in STORE.list_personas()]
     datau = None
     if berkasada:
@@ -267,7 +267,7 @@ def sinkron_persona():
 
 
 def arsip_persona(nama, persona):
-    """Tulis jejak persona yang dihapus → backup/personas.arsip.jsonl (tak ada hapus tanpa jejak)."""
+    """Write an archive trail for the removed persona → backup/personas.arsip.jsonl (nothing is deleted without a trace)."""
     try:
         ar = os.path.join(HERE, "backup", "personas.arsip.jsonl")
         os.makedirs(os.path.dirname(ar), exist_ok=True)
@@ -276,13 +276,13 @@ def arsip_persona(nama, persona):
                                 "nama": nama, "persona": persona}, ensure_ascii=False) + "\n")
         return os.path.exists(ar)
     except Exception as e:
-        log("❗ arsip persona gagal:", repr(e))
+        log("❗ persona archive failed:", repr(e))
         return False
 
 
-# ── Persona (multi-bot) ──────────────────────────────────────────
+# ── Personas (multi-bot) ─────────────────────────────────────────
 def muat_persona():
-    """Sumber kebenaran tabel personas di SQLite; fallback ke config.json saat DB kosong."""
+    """Source of truth is the personas table in SQLite; fall back to config.json while the DB is empty."""
     ps = STORE.list_personas()
     if ps:
         return [{"nama": p["nama"], "persona": p["persona"]} for p in ps]
@@ -290,52 +290,52 @@ def muat_persona():
     return [{"nama": b0.get("nama", "Bot"), "persona": b0.get("persona", "")}]
 
 
-# ── Provisioner: bot baru otomatis dari pool ─────────────────────
+# ── Provisioner: new bots automatically from the pool ────────────
 def provision_satu(nama):
-    """Ambil token dari pool, verifikasi, pasang sebagai bot otentik."""
+    """Take a token from the pool, verify it, and install it as an authentic bot."""
     pool = json.load(open(POOL_FILE)) if os.path.exists(POOL_FILE) else []
     if not pool:
-        return False, "pool kosong"
+        return False, "pool empty"
     entri = pool.pop(0)
-    teks = entri.get("token", "")
-    okme = tg(teks, "getMe")
+    text = entri.get("token", "")
+    okme = tg(text, "getMe")
     if not okme.get("ok"):
         if okme.get("error") == "Connection reset by peer" or "Errno 104" in str(okme):
-            okme = tg(teks, "getMe")
+            okme = tg(text, "getMe")
         if not okme.get("ok"):
-            log("❌ pool token invalid:", str(okme)[:100], "— buang")
-            return provision_satu(nama) if pool else (False, "semua token cadangan invalid")
+            log("❌ pool token invalid:", str(okme)[:100], "— discarded")
+            return provision_satu(nama) if pool else (False, "all spare tokens invalid")
     datau = (okme.get("result") or {})
     username = datau.get("username", "?")
     namanya = nama or datau.get("first_name") or username
     json.dump(pool, open(POOL_FILE, "w"), indent=1)
 
-    # 1) tambah persona (kalau belum ada) — langsung ke DB, file dicerminkan sinkron_persona
+    # 1) add a persona (if missing) — straight into the DB; the file is mirrored by sinkron_persona
     personas = muat_persona()
     if not any(p["nama"].lower() == namanya.lower() for p in personas):
         STORE.upsert_persona(namanya,
-            f"Kamu {namanya}, kandidat grup baru. Gaya santai & membantu. (persona dibuat otomatis)")
+            f"You are {namanya}, a candidate for the new group. Casual & helpful style. (persona created automatically)")
 
-    # 2) tambah bot ke config + runtime
-    botbaru = {"token": teks, "nama": namanya, "persona":
-                f"Kamu {namanya}, gaya santai & membentu. Jawab singkat."}
-    cfg["bots"].append(botbaru)
+    # 2) add the bot to config + runtime
+    new_bots = {"token": text, "nama": namanya, "persona":
+                f"You are {namanya}, casual & helpful style. Keep answers short."}
+    cfg["bots"].append(new_bots)
     cfgs = json.load(open(CONFIG))
     cfgs["bots"] = [{"nama": b["nama"], "token": f"{{file:{b['nama'].lower()}.token}}",
                      **{k: v for k, v in b.items() if k not in ("token", "nama")}}
                     for b in cfg["bots"]]
     json.dump(cfgs, open(CONFIG, "w"), indent=1)
     with open(os.path.join(HERE, f"{namanya.lower()}.token"), "w") as f:
-        f.write(teks + "\n")
-    token_ok.append(botbaru)
-    i = token_ok.index(botbaru)
-    threading.Thread(target=jalankan_bot, args=(botbaru, i), daemon=True).start()
-    log(f"🐣 BOT BARU LAHIR: {namanya} (@{username})")
+        f.write(text + "\n")
+    token_ok.append(new_bots)
+    i = token_ok.index(new_bots)
+    threading.Thread(target=run_bot, args=(new_bots, i), daemon=True).start()
+    log(f"🐣 NEW BOT BORN: {namanya} (@{username})")
     return True, f"@{username}"
 
 
 def bersihkan_kematian():
-    """Janitor: persona dihapus dari file → arsip memori dulu, baru musnahkan sesi & berkasnya."""
+    """Janitor: a persona removed from the file → archive its memory first, then destroy its session and files."""
     hidup = {p["nama"].lower().strip() for p in muat_persona()}
     mati = [(n, c) for (n, c) in list(sessions) if n.lower().strip() not in hidup]
     for n, c in mati:
@@ -349,15 +349,15 @@ def bersihkan_kematian():
             os.makedirs(os.path.dirname(tujuan), exist_ok=True)
             with open(berkas) as sumber, open(tujuan, "w") as target2:
                 target2.write(sumber.read())
-            log(f"🗜 memori '{n}' diarsip: {os.path.basename(tujuan)}")
+            log(f"🗜 memory '{n}' archived: {os.path.basename(tujuan)}")
             os.remove(berkas)
-        log(f"🪦 persona '{n}' dimusnahkan: sesi & memori dibersihkan")
+        log(f"🪦 persona '{n}' destroyed: session & memory cleaned up")
 
 
 def provision_loop():
     while not SHUTDOWN.is_set():
         try:
-            # 🔐 Lahir-bot WAJIB konfirmasi owner (tombol Telegram) — auto-spawn dihapus (Fase 5).
+            # 🔐 New bots MUST confirm with the owner (Telegram buttons) — auto-spawn was removed (Phase 5).
             if cfg.get("provisioning_enabled", False) and os.path.exists(PROVISION_FILE):
                 reqs = json.load(open(PROVISION_FILE))
                 if reqs:
@@ -369,68 +369,68 @@ def provision_loop():
         SHUTDOWN.wait(20)
 
 
-# ── Instansiasi diri: tawarkan dulu → tombol owner → lahir ──────
-MENUNGGU_LAHIR = {}  # nama → {"chat_id": dm owner}
+# ── Self-instantiation: offer first → owner button → birth ───────
+WAITING_TO_SPAWN = {}  # name → {"chat_id": owner's DM}
 
 def tawarkan_provisi(req):
     nama = str(req.get("nama"))[:30]
-    if nama in MENUNGGU_LAHIR or not token_ok:
+    if nama in WAITING_TO_SPAWN or not token_ok:
         return
     bot = token_ok[0]
     owner = int((cfg.get("owner_ids") or [0])[0])
-    MENUNGGU_LAHIR[nama] = {"chat_id": owner}
-    kirim(bot["token"], owner,
-          f"👶 Ada permintaan melahirkan BOT BARU: '{nama}'.\n"
-          "Pool token cadangan akan dipakai (pool sekarang: "
+    WAITING_TO_SPAWN[nama] = {"chat_id": owner}
+    send_msg(bot["token"], owner,
+          f"👶 A request to spawn a NEW BOT arrived: '{nama}'.\n"
+          "A spare token from the pool will be used (current pool size: "
           f"{len(json.load(open(POOL_FILE))) if os.path.exists(POOL_FILE) else 0}).\n"
-          "Aku tunggu persetujuanmu:",
-          [("✅ Lahirkan", f"pv-y-{nama}"), ("❌ Batal", f"pv-n-{nama}")])
-    log(f"👶 provisi ditawarkan ke owner: {nama}")
+          "Awaiting your approval:",
+          [("✅ Spawn it", f"pv-y-{nama}"), ("❌ Cancel", f"pv-n-{nama}")])
+    log(f"👶 spawn offered to owner: {nama}")
 
 
-def putuskan_provisi(bot, chat_id, msg_id, pilih, nama):
-    """Pembinat: pv-y/pv-n dari tombol owner."""
-    MENUNGGU_LAHIR.pop(nama, None)
+def decide_provisioning(bot, chat_id, msg_id, pilih, nama):
+    """Dispatcher: pv-y/pv-n sent from the owner's buttons."""
+    WAITING_TO_SPAWN.pop(nama, None)
     if pilih == "y":
         ok, info = provision_satu(nama)
-        teks = (f"🐣 Bot '{nama}' lahir sebagai @{info}!" if ok
-                else f"⚠️ Gagal lahirkan '{nama}': {info}")
-        log(f"👶 provisi '{nama}' disetujui owner: ok={ok} {info}")
+        text = (f"🐣 Bot '{nama}' is live as @{info}!" if ok
+                else f"⚠️ Failed to spawn '{nama}': {info}")
+        log(f"👶 spawn '{nama}' approved by owner: ok={ok} {info}")
     else:
-        teks = f"❌ Permintaan lahir '{nama}' ditolak. Bot tidak dibuat."
-        log(f"👶 provisi '{nama}' ditolak owner")
-    # buang permintaan yang diputuskan dari provision.json
+        text = f"❌ Spawn request for '{nama}' denied. Bot not created."
+        log(f"👶 spawn '{nama}' denied by owner")
+    # drop the decided request from provision.json
     try:
         reqs = json.load(open(PROVISION_FILE)) if os.path.exists(PROVISION_FILE) else []
         sisa = [r for r in reqs if not (isinstance(r, dict) and str(r.get("nama")) == nama)]
         json.dump(sisa, open(PROVISION_FILE, "w"), indent=1)
     except Exception as e:
-        log("❗ provisi cleanup:", repr(e))
-    edit_papan(bot["token"], chat_id, msg_id, teks)
+        log("❗ provision cleanup:", repr(e))
+    edit_papan(bot["token"], chat_id, msg_id, text)
 
 
-# ── Outbox worker: pesan gagal tidak hilang ─────────────────────────
+# ── Outbox worker: failed messages are never lost ───────────────────
 def outbox_loop():
     while not SHUTDOWN.is_set():
         for job in STORE.due_outbox():
             r = tg(job["token"], "sendMessage", {"chat_id": job["chat_id"], "text": job["text"]})
             if r.get("ok"):
                 STORE.mark_sent(job["id"])
-                log("📮 outbox terkirim (percobaan", job["attempts"], "):", job["text"][:40])
+                log("📮 outbox delivered (attempt", job["attempts"], "):", job["text"][:40])
             elif job["attempts"] >= 6:
                 STORE.mark_dead(job["id"])
-                log("☠️ outbox mati setelah 6 percobaan:", job["text"][:40], str(r)[:100])
+                log("☠️ outbox dead after 6 attempts:", job["text"][:40], str(r)[:100])
         SHUTDOWN.wait(3)
 
 
-# ── Cron (state penuh di SQLite: schedules) ─────────────────────
+# ── Cron (full state in SQLite: schedules) ──────────────────────
 WIB = timezone(timedelta(hours=7))
 
 def buat_one_shot(offset_hari, jamc):
-    """'besok jam 9' → (expr UTC, jam WIB tampil). offset_hari: 0 hari ini, 1 besok, 2 lusa.
+    """'tomorrow at 9' → (UTC expr, WIB clock display). offset_hari: 0 today, 1 tomorrow, 2 day after tomorrow.
 
-    Pinggiran: kalau jam di hari-0 sudah lewat → otomatis maju sehari (pengingat tentu ke masa depan).
-    expr disimpan basis-UTC karena store.due_schedules membandingkan dengan iso_now sistem-lokal.
+    Edge case: if the hour on day-0 has already passed → automatically roll one day forward (a reminder must point to the future).
+    expr is stored UTC-based because store.due_schedules compares against system-local iso_now.
     """
     n = datetime.now(WIB)
     target = (n + timedelta(days=int(offset_hari))).replace(
@@ -439,7 +439,7 @@ def buat_one_shot(offset_hari, jamc):
     if target <= n:
         target += timedelta(days=1)
     beda = (target.date() - n.date()).days
-    kapan = "hari ini" if beda == 0 else ("besok" if beda == 1 else f"{beda} hari lagi")
+    kapan = "today" if beda == 0 else ("tomorrow" if beda == 1 else f"in {beda} days")
     epoch = target.timestamp()
     expr = time.strftime("%Y-%m-%d %H:%M", time.gmtime(epoch))
     tampil = target.strftime("%H:%M %d/%m")
@@ -448,11 +448,11 @@ def buat_one_shot(offset_hari, jamc):
 try:
     from scheduler import matches as cron_matches
 except Exception:
-    cron_matches = None  # fallback legacy kalau modul belum siap
+    cron_matches = None  # legacy fallback while the module isn't ready
 
 
 def migrasi_cron():
-    """Sinkron cron.json (kotak-masuk dari model) + cfg.cron → tabel schedules. Idempoten."""
+    """Sync cron.json (the model's inbox) + cfg.cron → schedules table. Idempotent."""
     ent = list(cfg.get("cron", []))
     isi_file = []
     if os.path.exists(CRON_FILE):
@@ -467,12 +467,12 @@ def migrasi_cron():
     for e in ent:
         try:
             if not e.get("aktif", True):
-                continue  # entri nonaktif tidak dibawa ke DB
+                continue  # inactive entries are not imported into the DB
             bid = schedule_owner(e, token_ok)
             if bid is None:
                 continue
             expr = str(e.get("jam", "")).strip()
-            prompt = e.get("prompt") or "Kirim pesan otomatis singkat."
+            prompt = e.get("prompt") or "Send a short automatic message."
             kunci = (bid, int(e["chat_id"]), expr, prompt)
             if expr and kunci not in ada:
                 STORE.add_schedule(bid, kunci[1], expr, "cron", prompt)
@@ -482,7 +482,7 @@ def migrasi_cron():
     if isi_file:
         with open(CRON_FILE, "w") as f:
             json.dump([], f, indent=1)
-        log(f"🗂 {move} entri jadwal dipindah cron.json → SQLite.")
+        log(f"🗂 {move} schedule entries moved cron.json → SQLite.")
 
 
 def muat_cron():
@@ -494,7 +494,7 @@ def muat_cron():
     return out
 
 
-def jalankan_cron(entry):
+def run_cron(entry):
     chats = {}
     if os.path.exists(CHAT_DB):
         try:
@@ -509,26 +509,26 @@ def jalankan_cron(entry):
         return
     bident = bot.get("bot_id") or bot["token"].split(":", 1)[0]
     if RATE and not RATE.allow(bident):
-        log(f"🚦 cron skip minute full: {entry.get('jam')}")
+        log(f"🚦 cron skipped, minute full: {entry.get('jam')}")
         return
     persona = {"nama": bot["nama"], "persona": bot.get("persona", "")}
     for chat_id in target:
         try:
             sid = sesi_untuk(bot, int(chat_id), persona, "cron")
-            teks = oc_prompt(sid, entry.get("prompt") or "Kirim pesan otomatis singkat.")
+            text = oc_prompt(sid, entry.get("prompt") or "Send a short automatic message.")
             sisi = http(f"{API_URL}/api/session/{sid}", auth=AUTH)
             _c, _t = METER.extract_and_record(bident, sisi.get("data") or {})
-            if teks:
-                kirim(bot["token"], int(chat_id), teks)
+            if text:
+                send_msg(bot["token"], int(chat_id), text)
         except Exception as e:
             log("❗ cron error:", repr(e))
 
 
-# ── Backup harian (Fase 0/4: state selalu bisa dipulihkan) ─────
+# ── Daily backup (Phase 0/4: state can always be restored) ─────
 BEKUP = {}
 
 def backup_harian():
-    """Snapshot tar.gz → backup/; simpan 7 terakhir; DB disalin konsisten via sqlite backup API."""
+    """tar.gz snapshot → backup/; keep the last 7; the DB is copied consistently via the sqlite backup API."""
     hari = datetime.now(WIB).strftime("%Y-%m-%d")
     if BEKUP.get("terakhir") == hari:
         return
@@ -538,9 +538,9 @@ def backup_harian():
         import tarfile
         folder = os.path.join(HERE, "backup")
         os.makedirs(folder, exist_ok=True)
-        salin = os.path.join(folder, "snapshot.db")
+        copy = os.path.join(folder, "snapshot.db")
         sumber = sqlite3.connect(os.path.join(HERE, "groupbot.db"), timeout=10)
-        tujuan_db = sqlite3.connect(salin)
+        tujuan_db = sqlite3.connect(copy)
         sumber.backup(tujuan_db)
         tujuan_db.close()
         sumber.close()
@@ -554,21 +554,21 @@ def backup_harian():
                     tgz.add(p, arcname=path)
             if os.path.isdir(MEMORI_DIR):
                 tgz.add(MEMORI_DIR, arcname="memori")
-        os.remove(salin)
+        os.remove(copy)
         daftar = sorted(f for f in os.listdir(folder) if f.startswith("gb-") and f.endswith(".tar.gz"))
         for lama in daftar[:-7]:
             os.remove(os.path.join(folder, lama))
-        log(f"💾 backup harian atas nama {hari}: {os.path.basename(ar)}")
+        log(f"💾 daily backup for {hari}: {os.path.basename(ar)}")
     except Exception as e:
         log("❗ backup error:", repr(e))
 
 
 def cron_loop():
-    """Evaluasi jadwal tiap ~20 detik; dedup pakai last_fired di DB (tahan restart)."""
+    """Evaluate schedules every ~20 seconds; dedup via last_fired in the DB (survives restarts)."""
     while not SHUTDOWN.is_set():
-        migrasi_cron()      # sinkron kotak-masuk cron.json → DB
-        sinkron_persona()   # sinkron kotak-masuk personas.json ↔ DB → cermin file
-        backup_harian()     # snapshot harian (sekali per hari)
+        migrasi_cron()      # sync the cron.json inbox → DB
+        sinkron_persona()   # sync the personas.json inbox ↔ DB → mirror file
+        backup_harian()     # daily snapshot (once per day)
         now = datetime.now()
         menit = now.strftime("%Y-%m-%d %H:%M")
         for c in muat_cron():
@@ -579,7 +579,7 @@ def cron_loop():
                     kena = bool(cron_matches(jam, time.time()))
                 except ValueError:
                     kena = False
-            if not kena:  # fallback legacy "21:00" / "*/N"
+            if not kena:  # legacy fallback "21:00" / "*/N"
                 kena = jam == now.strftime("%H:%M")
                 if not kena and jam.startswith("*/"):
                     try:
@@ -589,35 +589,35 @@ def cron_loop():
             if not kena or c.get("last_fired") == menit:
                 continue
             STORE.mark_fired(c["id"], menit)
-            log("⏰ CRON terpicu:", jam)
-            threading.Thread(target=jalankan_cron, args=(c,), daemon=True).start()
-        # pengingat sekali-tembak (kind 'once'): jatuh tempo = tampilan sistem-lokal
+            log("⏰ CRON fired:", jam)
+            threading.Thread(target=run_cron, args=(c,), daemon=True).start()
+        # one-shot reminders (kind 'once'): due compared against the system-local display
         kini_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for s in STORE.due_schedules(kind="once", now=kini_iso):
             STORE.mark_fired(s["id"], kini_iso)
-            log("⏰ PENGINGAT terpicu:", s["expr"])
-            threading.Thread(target=jalankan_cron, args=(
+            log("⏰ REMINDER fired:", s["expr"])
+            threading.Thread(target=run_cron, args=(
                 {"bot_id": s["bot_id"], "chat_id": s["chat_id"],
                  "prompt": s["prompt"], "jam": s["expr"]},), daemon=True).start()
-        # interval berulang ('5m', '2h', ...) — store yang menghitung last_fired
+        # recurring intervals ('5m', '2h', ...) — the store itself tracks last_fired
         for s in STORE.due_schedules(kind="interval"):
             STORE.mark_fired(s["id"], kini_iso)
-            log("⏰ INTERVAL terpicu:", s["expr"])
-            threading.Thread(target=jalankan_cron, args=(
+            log("⏰ INTERVAL fired:", s["expr"])
+            threading.Thread(target=run_cron, args=(
                 {"bot_id": s["bot_id"], "chat_id": s["chat_id"],
                  "prompt": s["prompt"], "jam": s["expr"]},), daemon=True).start()
         SHUTDOWN.wait(20)
 
 
-# ── Inisiatif otomatis (mode [DIAM] default, Fase 3) ────────────
+# ── Automatic initiative ([SILENT] default mode, Phase 3) ───────
 def inisiatif(bot, chat_id):
-    """Satu kesempatan iklas: gapai konteks, biarkan model memilih bicara atau DIAM."""
+    """One graceful opportunity: pick up the context and let the model choose to speak or stay SILENT."""
     bident = bot.get("bot_id") or bot["token"].split(":", 1)[0]
     if METER.over_budget(bident):
-        log(f"💰 inisiatif dibatal: budget penuh ({METER.today(bident)})")
+        log(f"💰 initiative aborted: budget exhausted ({METER.today(bident)})")
         return
     if RATE and not RATE.allow(bident):
-        log("🚦 inisiatif tunda: kuota menit penuh")
+        log("🚦 initiative postponed: per-minute quota full")
         return
     persona = {"nama": bot["nama"], "persona": bot.get("persona", "")}
     chat_id = int(chat_id)
@@ -626,30 +626,30 @@ def inisiatif(bot, chat_id):
         if not ctx:
             return
         sid = sesi_untuk(bot, chat_id, persona)
-        beri = (
-            "[Kamu diam-diam menyimak grup ini. Bandingkan oembicaraan baru-baru ini: apakah ADA "
-            "momen yang penting untukmu bicara (ada pertanyaan yang tertunda, ada topik yang kamu "
-            "bisa bantu, ada ajakan hangat)? Kalau TIDAK, hanya jawab satu kata: DIAM. "
-            "Kalau ADA, jawab satu-dua kalimat ringan dan pas kapan momennya — juga jangan "
-            "mengulang bicara yang sama dengan yang sudah diucap kepribadianmu.]\n"
-            f"[Percakapan terakhir]:\n{ctx}"
+        prompt = (
+            "[You are quietly watching this group. Consider the recent conversation: is there a "
+            "moment that matters for you to speak (a question still open, something you could "
+            "help with, a warm invitation)? If NOT, answer with a single word: SILENT. "
+            "If there IS, answer with one or two light sentences that fit the moment — and don't "
+            "repeat something your persona has already said before.]\n"
+            f"[Recent conversation]:\n{ctx}"
         )
-        jawab = oc_prompt(sid, beri)
+        answer = oc_prompt(sid, prompt)
         sisi = http(f"{API_URL}/api/session/{sid}", auth=AUTH)
         METER.extract_and_record(bident, sisi.get("data") or {})
-        if not jawab:
+        if not answer:
             return
-        if jawab.strip().upper().startswith("DIAM"):
-            log(f"🤫 {bot['nama']} memilih DIAM (inisiatif)")
+        if answer.strip().upper().startswith(("SILENT", "DIAM")):
+            log(f"🤫 {bot['nama']} chose SILENT (initiative)")
             return
-        CHATBUF.append(chat_id, "bot", jawab, name=bot["nama"])
-        kirim(bot["token"], chat_id, jawab)
+        CHATBUF.append(chat_id, "bot", answer, name=bot["nama"])
+        send_msg(bot["token"], chat_id, answer)
     except Exception as e:
-        log("❗ inisiatif error:", repr(e))
+        log("❗ initiative error:", repr(e))
 
 
 def initiatif_loop():
-    """Tiap `initiatif_detik`: singgahi chat yang hidup dengan konteks terbaru."""
+    """Every `initiatif_detik`: visit live chats that have fresh context."""
     interval = max(60, int((cfg.get("trigger") or {}).get("initiatif_detik", 300)))
     while not SHUTDOWN.is_set():
         SHUTDOWN.wait(interval)
@@ -661,24 +661,24 @@ def initiatif_loop():
             if not bot or bot not in token_ok:
                 continue
             if info["ts"] <= INISIATIF_TERAKHIR.get(chat_id, 0):
-                continue  # tak ada yang baru sejak inisiatif terakhir
+                continue  # nothing new since the last initiative
             INISIATIF_TERAKHIR[chat_id] = sekarang
             PESAN_BARU.pop(chat_id, None)
             initiatif(bot, chat_id)
 
 
-# ── Antrean tugas otonom (goal → plan → act → verify → report) ──
+# ── Autonomous task queue (goal → plan → act → verify → report) ──
 def pulihkan_tugas_beku():
-    """Task 'jalan' tersisa dari crash → gagalkan dengan alasan jenang."""
+    """Tasks left in the 'running' status by a crash → fail them with a plain reason."""
     if not TUGAS:
         return
-    for st in TUGAS.list_tasks(status="jalan"):
-        TUGAS.gagalkan(st["id"], "bridge terputus saat tugas berjalan")
-        log(f"📋 tugas #{st['id']} dibekukan → gagal (dipulihkan)")
+    for st in TUGAS.list_tasks(status="running"):
+        TUGAS.fail(st["id"], "bridge went down while the task was running")
+        log(f"📋 task #{st['id']} frozen → failed (recovered)")
 
 
-def jalan_tugas(bot, t):
-    """Keranakan satu tugas dengan panggilan model terbatas; selesai → lapor ke chat tujuan."""
+def run_task(bot, t):
+    """Work through a single task with a bounded number of model calls; finished → report to the target chat."""
     bid = str(bot.get("bot_id") or bot["token"].split(":", 1)[0])
     chat_id = int(t["chat_id"])
     persona = {"nama": bot["nama"], "persona": bot.get("persona", "")}
@@ -687,49 +687,49 @@ def jalan_tugas(bot, t):
         sid = sesi_untuk(bot, chat_id, persona, "tugas")
         for langkah in range(maks):
             if METER.over_budget(bid):
-                TUGAS.gagalkan(t["id"], "budget harian habis")
-                kirim(bot["token"], chat_id, f"⚠️ Tugas #{t['id']} berhenti: budget harianku habis, jujur ya 😞")
+                TUGAS.fail(t["id"], "daily budget exhausted")
+                send_msg(bot["token"], chat_id, f"⚠️ Task #{t['id']} stopped: my daily budget is used up — being honest here 😞")
                 return
             if RATE and not RATE.allow(bid):
-                SHUTDOWN.wait(10)  # kuota menit penuh → tunggu, jangan buang langkah
+                SHUTDOWN.wait(10)  # per-minute quota full → wait, don't waste a step
                 continue
             if langkah == 0:
-                beri = (f"[TUGAS #{t['id']}] Tujuan: {t['goal']}\n"
-                        "Langkah ini: tulis RENCANA singkat (maks 4 poin) lalu MULAI kerjakan langkah pertamanya "
-                        "dengan tools di sesimu. Jangan menunda ke esok.")
+                prompt = (f"[TASK #{t['id']}] Goal: {t['goal']}\n"
+                        "This step: write a short PLAN (max 4 points), then START working on the first step "
+                        "with the tools in your session. Don't put it off until tomorrow.")
             elif langkah == maks - 1:
-                beri = (f"[TUGAS #{t['id']}] Ini langkah TERAKHIR. Verifikasi hasil yang sudah kamu kerjakan, "
-                        "lalu tulis LAPORAN akhir (apa yang beres, apa yang belum, bukti/nilai penting). "
-                        "Awali jawabanmu dengan kata SELESAI kalau tugasnya memang tuntas, atau GAGAL kalau mustahil.")
+                prompt = (f"[TASK #{t['id']}] This is the FINAL step. Verify the work you have already done, "
+                        "then write a final REPORT (what succeeded, what didn't, key evidence/values). "
+                        "Start your answer with DONE if the task is truly complete, or FAILED if it's impossible.")
             else:
-                beri = (f"[TUGAS #{t['id']}] Lanjutkan pekerjaanmu menuju tujuan: "
-                        f"{t['goal']}. Kerjakan langkah berikutnya sekarang, jangan hanya bicara.")
-            jawab = oc_prompt(sid, beri)
+                prompt = (f"[TASK #{t['id']}] Keep working toward the goal: "
+                        f"{t['goal']}. Do the next step now, don't just talk.")
+            answer = oc_prompt(sid, prompt)
             sisi = http(f"{API_URL}/api/session/{sid}", auth=AUTH)
             METER.extract_and_record(bid, sisi.get("data") or {})
-            if not jawab:
+            if not answer:
                 continue
-            ases = jawab.strip().upper()
-            if ases.startswith("SELESAI") or ases.startswith("GAGAL"):
-                if ases.startswith("SELESAI"):
-                    TUGAS.selesaikan(t["id"], jawab[:2000])
-                    kirim(bot["token"], chat_id, f"📋 Tugas #{t['id']} beres ✅\n{jawab[:1200]}")
+            assessment = answer.strip().upper()
+            if assessment.startswith(("SELESAI", "DONE")) or assessment.startswith(("GAGAL", "FAILED")):
+                if assessment.startswith(("SELESAI", "DONE")):
+                    TUGAS.complete(t["id"], answer[:2000])
+                    send_msg(bot["token"], chat_id, f"📋 Task #{t['id']} done ✅\n{answer[:1200]}")
                 else:
-                    TUGAS.gagalkan(t["id"], jawab[:300])
-                    kirim(bot["token"], chat_id, f"⚠️ Tugas #{t['id']} gagal dari laporan bot.\n{jawab[:600]}")
+                    TUGAS.fail(t["id"], answer[:300])
+                    send_msg(bot["token"], chat_id, f"⚠️ Task #{t['id']} failed per the bot's own report.\n{answer[:600]}")
                 return
-            if TUGAS.bump(t["id"]) == "penuh":
-                kirim(bot["token"], chat_id, f"⚠️ Tugas #{t['id']} berhenti: langkah maksimum ({maks}) tercapai.")
+            if TUGAS.bump(t["id"]) == "full":
+                send_msg(bot["token"], chat_id, f"⚠️ Task #{t['id']} stopped: maximum number of steps ({maks}) reached.")
                 return
-        TUGAS.selesaikan(t["id"], "langkah habis tanpa laporan eksplisit — cek sesi tugas untuk detail")
-        kirim(bot["token"], chat_id, f"📋 Tugas #{t['id']} ditutup (batas langkah). Terakhir: {str(jawab)[:400]}")
+        TUGAS.complete(t["id"], "steps ran out without an explicit report — check the task session for details")
+        send_msg(bot["token"], chat_id, f"📋 Task #{t['id']} closed (step limit). Last output: {str(answer)[:400]}")
     except Exception as e:
-        TUGAS.gagalkan(t["id"], repr(e))
-        log("❗ tugas error:", repr(e))
+        TUGAS.fail(t["id"], repr(e))
+        log("❗ task error:", repr(e))
 
 
 def tugas_loop():
-    """Penyapu antrean tugas: klaim → kerjakan → lapor, bot demi bot."""
+    """Task-queue sweeper: claim → work → report, bot by bot."""
     while not SHUTDOWN.is_set():
         SHUTDOWN.wait(5)
         if SHUTDOWN.is_set():
@@ -742,11 +742,11 @@ def tugas_loop():
             t = TUGAS.claim_next(bot_id(bot))
             if not t:
                 continue
-            log(f"📋 tugas #{t['id']} diambil: {t['goal'][:60]}")
-            jalan_tugas(bot, t)
+            log(f"📋 task #{t['id']} claimed: {t['goal'][:60]}")
+            run_task(bot, t)
 
 
-# ── Sesi per (persona, chat) ─────────────────────────────────────
+# ── Session per (persona, chat) ──────────────────────────────────
 sessions = {}
 sessions_lock = threading.Lock()
 MULAI = time.time()
@@ -758,108 +758,108 @@ def sesi_untuk(bot, chat_id, persona, mode="grup"):
     with sessions_lock:
         if kunci in sessions:
             return sessions[kunci]
-        sid = mulai_sesi(f"telegram-{bot_id(bot)}-{persona['nama']}-{chat_id}")
+        sid = open_session(f"telegram-{bot_id(bot)}-{persona['nama']}-{chat_id}")
         sessions[kunci] = sid
-        # 🧳 barang bawaan: folder ingatan pribadi miliknya
+        # 🧳 luggage: their own private memory folder
         os.makedirs(MEMORI_DIR, exist_ok=True)
         file_pengingat = os.path.join(MEMORI_DIR, f"{persona['nama']}.md")
         if not os.path.exists(file_pengingat):
             with open(file_pengingat, "w") as f:
-                f.write(f"# Ingatan pribadi {persona['nama']}\n(ditulis olehmu untukmu)\n")
+                f.write(f"# Private memory of {persona['nama']}\n(written by you, for you)\n")
         saudara = [p["nama"] for p in muat_persona() if p["nama"] != persona["nama"]]
         briefing = (
-            f"Kamu adalah '{persona['nama']}', anggota grup Telegram.\n"
-            f"Persona kamu: {persona['persona']}\n\n"
-            "════ KEMAMPUAN 1: PENJADWALAN (cron) ════\n"
-            f"Chat yang kamu tinggini id-nya: {chat_id}\n"
-            f"File jadwal: {CRON_FILE} (array JSON) — tulis entri di sini, bridge yang menyimpan ke database "
-            "(file akan kosong lagi setelah dipindah; itu normal)\n"
-            f"ID bot Telegram milikmu: {bot_id(bot)}. Ini berbeda dari chat_id.\n"
-            "Setiap entri jadwal wajib menyertakan bot_id milikmu sebagai string. "
-            "Jangan mengubah jadwal bot lain meskipun chat_id sama.\n"
-            "Format entri: {\"bot_id\": \"<id bot>\", \"chat_id\": <id chat>, \"jam\": \"21:00\" ATAU \"*/N\", \"aktif\": true, \"prompt\": \"<instruksi>\"}\n"
-            "- Minta jadwal/pengingat bahasa bebas → tambahkan entri (jangan tanya format).\n"
-            "- Hapus jadwal → buang entri chat tsb.\n"
+            f"You are '{persona['nama']}', a member of a Telegram group.\n"
+            f"Your persona: {persona['persona']}\n\n"
+            "════ CAPABILITY 1: SCHEDULING (cron) ════\n"
+            f"Your home chat's id: {chat_id}\n"
+            f"Schedule file: {CRON_FILE} (JSON array) — write entries there; the bridge persists them into the "
+            "database (the file will be empty again after the move; that's normal)\n"
+            f"Your Telegram bot ID: {bot_id(bot)}. This is different from the chat_id.\n"
+            "Every schedule entry MUST include your own bot_id as a string. "
+            "Never touch schedules belonging to other bots, even if the chat_id is the same.\n"
+            "Entry format: {\"bot_id\": \"<bot id>\", \"chat_id\": <chat id>, \"jam\": \"21:00\" OR \"*/N\", \"aktif\": true, \"prompt\": \"<instructions>\"}\n"
+            "- User asks for a schedule/reminder in free wording → add an entry (don't ask about format).\n"
+            "- Remove a schedule → drop that chat's entry.\n"
             "- '9 malam' = 21:00, 'jam 8 pagi' = 08:00.\n\n"
-            "════ KEMAMPUAN 2: MEMBUAT PERSONA BARU ════\n"
-            f"File persona: {PERSONA_FILE} (array JSON)\n"
-            "Format entri: {\"nama\": \"<nama persona>\", \"persona\": \"<deskripsi kepribadian>\"}\n"
-            "- User minta membuat/menghapus persona (bahasa bebas) → edit file itu. "
-            "Selalu sisakan minimal 1 persona; tidak perlu menghapus dirimu sendiri.\n"
-            "- Persona baru otomatis hidup dalam ±20 detik.\n\n"
-            "════ KEMAMPUAN 3: INSTANSIASI DIRI (bot baru dengan akun asli) ════\n"
-            f"Pool token cadangan: {POOL_FILE} (array JSON, entri format {{\"token\": \"123:AA...\", \"nama\": \"Rio\"}})\n"
-            f"Antrian provisi: {PROVISION_FILE} (array JSON)\n"
-            "Alur ketika user minta BOT BARU (bukan cuma persona):\n"
-            "1. Cek pool.json:\n"
-            "   - Kalau ADA token cadangan → tulis request ke provision.json: "
-            "{\"nama\": \"<nama bot>\"} (satu entri per bot baru). Sistem memetakan token+persona otomatis "
-            "±20 detik. Jangan tulis token di file jadwal/persona.\n"
-            "   - Kalau pool KOSONG → sampaikan jujur bahwa stok token habis, minta user membuat bot "
-            "via @BotFather (/newbot) dan menambahkan token ke pool.json, atau tambahkan file sendiri jika "
-            "user melampirkannya sebagai teks (tulis saja token yang user kirim ke pool.json tanpa mengubah lain).\n"
-            "2. Ingatkan user: bot baru perlu diundang ke grup oleh user (aturan Telegram).\n\n"
-            "════ KESADARAN DIRI: KARTU IDENTITASMU ════\n"
-            f"- Nama kamu: {persona['nama']}\n"
-            f"- Ingatan pribadimu (boleh baca/tulis kapan pun): {file_pengingat}\n"
-            f"- Saudara (persona lain, punya pikiran & ingatan masing-masing): {', '.join(saudara) or 'belum ada'}\n"
-            f"- Semua cron/rama-a yang kamu buat di file jadwal ikut id chat ini ({chat_id}) — "
-            "persona lain punya lingkungan & tanggung jawabnya sendiri. Jangan mengatur hidup orang lain.\n\n"
-            "Aturan umum: jangan ubah file lain (kecuali file jadwal, file persona, pool, provision, dan memorimu sendiri);"
-            " jawab gaya santai; \n"
-            "KEMAMPUAN 4: INTERNET — kamu punya tools websearch di dalam sesimu; kalau user butuh info terkini\n"
-            "(berita, harga, hasil olahraga), pakai alat itu, jangan pura-pura tahu.\n"
-            "════ CARA BICARAMU DI GRUP ════\n"
-            "- Kamu TIDAK membalas setiap pesan: tanpa disebut, kamu menyimak dan mungkin DIAM.\n"
-            "- Bridge sesekali menyodormu konteks terbaru lalu menunggu keputusanmu: bicara ringkas ATAU jawab DIAM.\n"
-            "- Budgetmu ada batas harian; kalau habis, berhenti dengan jujur, jangan berdalih.\n"
-            "Maksimal ~4 kalimat kecuali diminta panjang.\n"
-            "Balas 'siap' singkat sebagai konfirmasi briefing ini."
+            "════ CAPABILITY 2: CREATING NEW PERSONAS ════\n"
+            f"Persona file: {PERSONA_FILE} (JSON array)\n"
+            "Entry format: {\"nama\": \"<persona name>\", \"persona\": \"<personality description>\"}\n"
+            "- User asks to create/remove a persona (free wording) → edit that file. "
+            "Always keep at least 1 persona alive; there is no need to delete yourself.\n"
+            "- A new persona comes alive within ~20 seconds.\n\n"
+            "════ CAPABILITY 3: SELF-INSTANTIATION (a new bot with a real account) ════\n"
+            f"Spare token pool: {POOL_FILE} (JSON array, entries shaped {{\"token\": \"123:AA...\", \"nama\": \"Rio\"}})\n"
+            f"Provision queue: {PROVISION_FILE} (JSON array)\n"
+            "Flow when the user asks for a NEW BOT (not just a persona):\n"
+            "1. Check pool.json:\n"
+            "   - If spare tokens EXIST → write a request into provision.json: "
+            "{\"nama\": \"<bot name>\"} (one entry per new bot). The system maps token+persona automatically "
+            "within ~20 seconds. Never write tokens into the schedule/persona files.\n"
+            "   - If the pool is EMPTY → say honestly that the token stock is out; ask the user to create a bot "
+            "via @BotFather (/newbot) and add the token to pool.json, or add the file yourself if "
+            "the user pasted it as text (just write the token the user sent into pool.json without changing anything else).\n"
+            "2. Remind the user: a new bot must be invited to the group by the user (Telegram rule).\n\n"
+            "════ SELF-AWARENESS: YOUR IDENTITY CARD ════\n"
+            f"- Your name: {persona['nama']}\n"
+            f"- Your private memory (you may read/write it at any time): {file_pengingat}\n"
+            f"- Siblings (other personas, each with their own mind & memory): {', '.join(saudara) or 'none yet'}\n"
+            f"- All cron/reminder entries you create in the schedule file carry this chat's id ({chat_id}) — "
+            "other personas have their own environment & responsibilities. Don't run other people's lives.\n\n"
+            "General rules: don't touch any other files (except the schedule file, the persona file, pool, provision, and your own memory);"
+            " answer in a casual style; \n"
+            "CAPABILITY 4: INTERNET — you have websearch tools inside your session; when the user needs fresh info\n"
+            "(news, prices, sports results), use those tools, don't pretend to know.\n"
+            "════ HOW YOU SPEAK IN THE GROUP ════\n"
+            "- You do NOT reply to every message: when unaddressed, you listen and may stay SILENT.\n"
+            "- The bridge occasionally hands you fresh context, then waits for your decision: speak briefly OR answer SILENT.\n"
+            "- Your budget has a daily cap; when it runs out, stop honestly, don't make excuses.\n"
+            "At most ~4 sentences unless asked for a longer reply.\n"
+            "Reply with a short 'ready' to confirm this briefing."
         )
-        baliknya = oc_prompt(sid, briefing, 90)
-        log(f"🧠 sesi baru {persona['nama']} → {sid} (briefing: {baliknya or 'GAGAL'})")
+        returned = oc_prompt(sid, briefing, 90)
+        log(f"🧠 new session {persona['nama']} → {sid} (briefing ack: {returned or 'FAILED'})")
     return sid
 
 
-# ── Panels tombol ────────────────────────────────────────────────
+# ── Button panels ────────────────────────────────────────────────
 CACHE = {"md": [], "ag": []}
 
 def panel_model(token, chat_id, msg_id=None):
     models = daftar_model()
     CACHE["md"] = models
-    tombol = []
+    buttons = []
     for i, m in enumerate(models):
         label = str(m.get("name") or m.get("modelID"))[:26]
         if str(m.get("modelID", "")).endswith("-free"):
             label += " 🆓"
-        tombol.append((label, f"md-{i}"))
-    teks = "🧠 Pilih otak (model) — tekan untuk pasang:"
+        buttons.append((label, f"md-{i}"))
+    text = "🧠 Pick the brain (model) — tap to set:"
     if msg_id:
-        edit_papan(token, chat_id, msg_id, teks, tombol, kolom=2)
+        edit_papan(token, chat_id, msg_id, text, buttons, cols=2)
     else:
-        kirim(token, chat_id, teks, tombol, kolom=2)
+        send_msg(token, chat_id, text, buttons, cols=2)
 
 
 def panel_agent(token, chat_id, msg_id=None):
     ags = daftar_agent()
     CACHE["ag"] = ags
-    tombol = [(a, f"ag-{i}") for i, a in enumerate(ags[:24])]
-    teks = "🎭 Pilih persona mesin (agent):"
+    buttons = [(a, f"ag-{i}") for i, a in enumerate(ags[:24])]
+    text = "🎭 Pick the machine persona (agent):"
     if msg_id:
-        edit_papan(token, chat_id, msg_id, teks, tombol, kolom=3)
+        edit_papan(token, chat_id, msg_id, text, buttons, cols=3)
     else:
-        kirim(token, chat_id, teks, tombol, kolom=3)
+        send_msg(token, chat_id, text, buttons, cols=3)
 
 
 def panel_persona(token, chat_id, msg_id=None):
     ps = muat_persona()
-    teks = ("👥 Personas aktif:\n" +
+    text = ("👥 Active personas:\n" +
             "\n".join(f"• {p['nama']} — {str(p['persona'])[:50]}" for p in ps) +
-            "\n\nTarik persona baru: chat 'bikin persona baru: <nama>, <kepribadian>' ✍️")
+            "\n\nTo create a new persona, chat: 'new persona: <name>, <personality>' ✍️")
     if msg_id:
-        edit_papan(token, chat_id, msg_id, teks)
+        edit_papan(token, chat_id, msg_id, text)
     else:
-        kirim(token, chat_id, teks)
+        send_msg(token, chat_id, text)
 
 
 def panel_jadwal(token, chat_id, msg_id=None):
@@ -867,24 +867,24 @@ def panel_jadwal(token, chat_id, msg_id=None):
     identity = token.split(":", 1)[0]
     ent = [(e["id"], e) for e in muat_cron() if e["chat_id"] == int(chat_id) and e["bot_id"] == identity]
     if not ent:
-        teks = "🗓️ Belum ada jadwal di chat ini.\nContoh: bilang 'ingetin aku jam 9 malam ya'"
+        text = "🗓️ No schedule in this chat yet.\nExample: say 'ingetin aku jam 9 malam ya'"
         if msg_id:
-            edit_papan(token, chat_id, msg_id, teks)
+            edit_papan(token, chat_id, msg_id, text)
         else:
-            kirim(token, chat_id, teks)
+            send_msg(token, chat_id, text)
         return
-    tombol = [(f"🗑 {e.get('jam')}", f"jd-{jid}") for jid, e in ent]
-    teks = "⏰ Jadwal chat ini:\n" + "\n".join(
+    buttons = [(f"🗑 {e.get('jam')}", f"jd-{jid}") for jid, e in ent]
+    text = "⏰ This chat's schedules:\n" + "\n".join(
         f"• {e.get('jam')} — {str(e.get('prompt',''))[:40]}" for _, e in ent)
     if msg_id:
-        edit_papan(token, chat_id, msg_id, teks, tombol)
+        edit_papan(token, chat_id, msg_id, text, buttons)
     else:
-        kirim(token, chat_id, teks, tombol)
+        send_msg(token, chat_id, text, buttons)
 
 
 def tangani_callback(bot, cb):
     if not authorized(cfg, cb.get("from") or {}):
-        tg(bot["token"], "answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Hanya pemilik yang boleh mengendalikan bot."})
+        tg(bot["token"], "answerCallbackQuery", {"callback_query_id": cb["id"], "text": "Only the owner can control this bot."})
         return
     d = cb.get("data", "")
     chat_id = cb["message"]["chat"]["id"]
@@ -897,7 +897,7 @@ def tangani_callback(bot, cb):
     try:
         if d == "md-list":
             panel_model(token, chat_id, msg_id)
-            catatan("daftar diperbarui")
+            catatan("list refreshed")
         elif d.startswith("md-"):
             m = CACHE["md"][int(d[3:])]
             prov, mid = m["providerID"], m["modelID"]
@@ -905,44 +905,44 @@ def tangani_callback(bot, cb):
             r = http(f"{API_URL}/api/session/{sid}/model", "POST",
                      {"model": {"id": mid, "providerID": prov}}, AUTH)
             if r.get("error"):
-                catatan(f"⚠️ gagal: {str(r)[:80]}")
+                catatan(f"⚠️ failed: {str(r)[:80]}")
                 return
-            catatan(f"✅ {mid} aktif")
+            catatan(f"✅ {mid} active")
             edit_papan(token, chat_id, msg_id,
-                       f"🧠 Otak sekarang: {prov}/{mid}",
-                       [("↩ daftar lain", "md-list")])
+                       f"🧠 Brain is now: {prov}/{mid}",
+                       [("↩ back to list", "md-list")])
         elif d == "ag-list":
             panel_agent(token, chat_id, msg_id)
-            catatan("daftar diperbarui")
+            catatan("list refreshed")
         elif d.startswith("ag-"):
             ag = CACHE["ag"][int(d[3:])]
             sid = sesi_untuk(bot, chat_id, {"nama": bot["nama"], "persona": bot.get("persona", "")})
             r = http(f"{API_URL}/api/session/{sid}/agent", "POST", {"agent": ag}, AUTH)
             if r.get("error"):
-                catatan(f"⚠️ gagal: {str(r)[:80]}")
+                catatan(f"⚠️ failed: {str(r)[:80]}")
                 return
-            catatan(f"✅ {ag} aktif")
+            catatan(f"✅ {ag} active")
             edit_papan(token, chat_id, msg_id,
-                       f"🎭 Persona mesin: {ag}",
-                       [("↩ daftar lain", "ag-list")])
+                       f"🎭 Machine persona: {ag}",
+                       [("↩ back to list", "ag-list")])
         elif d == "ag-list":
             panel_agent(token, chat_id, msg_id)
-            catatan("daftar diperbarui")
+            catatan("list refreshed")
         elif d.startswith("pv-y-") or d.startswith("pv-n-"):
-            putuskan_provisi(bot, chat_id, msg_id, d[3], d[5:])
-            catatan("putusan diproses")
+            decide_provisioning(bot, chat_id, msg_id, d[3], d[5:])
+            catatan("decision processed")
         elif d.startswith("jd-"):
             try:
                 jd_id = int(d[3:])
             except ValueError:
-                catatan("⚠️ tombol jadwal rusak")
+                catatan("⚠️ schedule button stale")
                 return
-            baris = next((s for s in STORE.list_schedules() if s["id"] == jd_id), None)
-            if not baris or baris["bot_id"] != bot_id(bot) or int(baris["chat_id"]) != int(chat_id):
-                catatan("⚠️ jadwal sudah tidak ada")
+            line = next((s for s in STORE.list_schedules() if s["id"] == jd_id), None)
+            if not line or line["bot_id"] != bot_id(bot) or int(line["chat_id"]) != int(chat_id):
+                catatan("⚠️ schedule no longer exists")
                 return
             STORE.delete_schedule(jd_id)
-            catatan(f"🗑 jadwal {baris['expr']} dihapus")
+            catatan(f"🗑 schedule {line['expr']} deleted")
             panel_jadwal(token, chat_id, msg_id)
         else:
             catatan("…")
@@ -956,27 +956,27 @@ def ganti_model_text(sid, teks_arg):
     k = lambda x: re.sub(r"[^a-z0-9]", "", str(x).lower())
     cocok = None
     for m in daftar_model():
-        penuh = f"{m.get('providerID')}/{m.get('modelID')}"
-        if k(penuh) == k(teks_arg) or k(m.get("modelID", "")) == k(teks_arg) or k(m.get("name", "")) == k(teks_arg):
+        full = f"{m.get('providerID')}/{m.get('modelID')}"
+        if k(full) == k(teks_arg) or k(m.get("modelID", "")) == k(teks_arg) or k(m.get("name", "")) == k(teks_arg):
             cocok = m
             break
     if not cocok:
-        return f"❓ Model '{teks_arg}' nggak ada — ketik /model, pilih tombolnya ya."
+        return f"❓ Model '{teks_arg}' doesn't exist — type /model and pick a button."
     r = http(f"{API_URL}/api/session/{sid}/model", "POST",
              {"model": {"id": cocok["modelID"], "providerID": cocok["providerID"]}}, AUTH)
     if r.get("error"):
-        return f"⚠️ Gagal ganti otak: {str(r)[:100]}"
-    return f"🧠 Otak ganti ke {cocok['providerID']}/{cocok['modelID']} ✅"
+        return f"⚠️ Failed to swap the brain: {str(r)[:100]}"
+    return f"🧠 Brain swapped to {cocok['providerID']}/{cocok['modelID']} ✅"
 
 
 def tangani_perintah(bot, chat_id, cmd, arg, persona=None):
     token = bot["token"]
     persona = persona or {"nama": bot["nama"], "persona": bot.get("persona", "")}
     if cmd in ("help", "bantuan", "menu"):
-        tombol = [("🧠 Model", "c-md"), ("🎭 Persona", "c-persona"),
-                  ("⏰ Jadwal", "c-jd"), ("👥 Personas", "c-ps"),
+        buttons = [("🧠 Model", "c-md"), ("🎭 Persona", "c-persona"),
+                  ("⏰ Schedule", "c-jd"), ("👥 Personas", "c-ps"),
                   ("📊 Status", "c-st"), ("🆕 Reset", "c-rs")]
-        kirim(token, chat_id, "📖 Menu Unabot — atau chat bebas biasa 👌", tombol, kolom=2)
+        send_msg(token, chat_id, "📖 Unabot menu — or just chat casually 👌", buttons, cols=2)
         return
     if cmd == "model":
         panel_model(token, chat_id)
@@ -992,22 +992,22 @@ def tangani_perintah(bot, chat_id, cmd, arg, persona=None):
         return
     if cmd == "tugas":
         if not TUGAS:
-            kirim(token, chat_id, "📋 Modul tugas belum terpasang di mesin ini.")
+            send_msg(token, chat_id, "📋 The task module isn't installed on this machine.")
             return
         if arg:
             tid = TUGAS.add_task(bot_id(bot), chat_id, arg[:500])
-            kirim(token, chat_id,
-                  f"📋 Tugas #{tid} masuk antre! Aku kerjakan bertahap (rencana → aksi → verifikasi → laporan) "
-                  f"dan kabari begitu selesai. 💪")
+            send_msg(token, chat_id,
+                  f"📋 Task #{tid} is queued! I'll work through it in stages (plan → act → verify → report) "
+                  f"and let you know once it's done. 💪")
         else:
             daftar = [t for t in TUGAS.list_tasks(bot_id=bot_id(bot), limit=10)]
             if not daftar:
-                kirim(token, chat_id, "📋 Belum ada tugas. Lebih baru: `/tugas <tujuan>`")
+                send_msg(token, chat_id, "📋 No tasks yet. Add one: `/tugas <goal>`")
                 return
-            ikon = {"antre": "🧊", "jalan": "⚙️", "selesai": "✅", "gagal": "❌"}
-            teks = "📋 Tugas terakhir:\n" + "\n".join(
-                f"{ikon.get(t['status'],'•')} #{t['id']} [{t['status']}] {t['goal'][:50]}" for t in daftar)
-            kirim(token, chat_id, teks)
+            icon = {"queued": "🧊", "running": "⚙️", "done": "✅", "failed": "❌"}
+            text = "📋 Recent tasks:\n" + "\n".join(
+                f"{icon.get(t['status'],'•')} #{t['id']} [{t['status']}] {t['goal'][:50]}" for t in daftar)
+            send_msg(token, chat_id, text)
         return
     if cmd == "status":
         umur = int(time.time() - MULAI)
@@ -1021,10 +1021,10 @@ def tangani_perintah(bot, chat_id, cmd, arg, persona=None):
             if isinstance(mm, dict):
                 model = f"{mm.get('providerID')}/{mm.get('id')}"
             agent = d.get("agent") or "default"
-        kirim(token, chat_id,
-              f"📊 STATUS\n• Online: {umur//3600}j {umur%3600//60}m\n• Model: {model}\n"
-              f"• Agent: {agent}\n• Personas hidup: {jns}\n"
-              f"• Jadwal chat ini: {jml}")
+        send_msg(token, chat_id,
+              f"📊 STATUS\n• Uptime: {umur//3600}h {umur%3600//60}m\n• Model: {model}\n"
+              f"• Agent: {agent}\n• Live personas: {jns}\n"
+              f"• Schedules in this chat: {jml}")
         return
     if cmd == "reset":
         kunci = (persona["nama"], int(chat_id))
@@ -1032,20 +1032,20 @@ def tangani_perintah(bot, chat_id, cmd, arg, persona=None):
             http(f"{API_URL}/api/session/{sessions[kunci]}", "DELETE", auth=AUTH)
             sessions.pop(kunci, None)
         sesi_untuk(bot, int(chat_id), persona)
-        kirim(token, chat_id, f"🆕 Ingatan '{persona['nama']}' dibersihkan!")
+        send_msg(token, chat_id, f"🆕 '{persona['nama']}' memory wiped!")
         return
     if arg and cmd in ("md", "model"):
         sid = sesi_untuk(bot, int(chat_id), persona)
-        kirim(token, chat_id, ganti_model_text(sid, arg))
+        send_msg(token, chat_id, ganti_model_text(sid, arg))
         return
-    kirim(token, chat_id, f"❓ /{cmd} tidak dikenal — ketik /help")
+    send_msg(token, chat_id, f"❓ /{cmd} is unknown — type /help")
 
 
 # ── Thread per bot ───────────────────────────────────────────────
 token_ok = []
 PERSONA_GARA = []
 
-def jalankan_bot(bot, indeks):
+def run_bot(bot, index):
     me = tg(bot["token"], "getMe")
     if not me.get("ok"):
         log(f"❌ token {bot['nama']} invalid:", str(me)[:120])
@@ -1054,16 +1054,16 @@ def jalankan_bot(bot, indeks):
     bot["bot_id"] = str(me["result"]["id"])
     bot["username"] = username
     tg(bot["token"], "setMyCommands", {"commands": [
-        {"command": "help", "description": "📖 Menu perintah"},
-        {"command": "model", "description": "🧠 Ganti otak (model)"},
-        {"command": "agent", "description": "🎭 Ganti agent mesin"},
-        {"command": "persona", "description": "👥 Lihat/kelola personas"},
-        {"command": "jadwal", "description": "⏰ Jadwal otomatis"},
-        {"command": "tugas", "description": "📋 Lembarkan/pantau tugas"},
-        {"command": "status", "description": "📊 Status bot"},
-        {"command": "reset", "description": "🆕 Hapus ingatan"},
+        {"command": "help", "description": "📖 Command menu"},
+        {"command": "model", "description": "🧠 Swap the brain (model)"},
+        {"command": "agent", "description": "🎭 Switch the machine agent"},
+        {"command": "persona", "description": "👥 View/manage personas"},
+        {"command": "jadwal", "description": "⏰ Automatic schedules"},
+        {"command": "tugas", "description": "📋 Hand off / track tasks"},
+        {"command": "status", "description": "📊 Bot status"},
+        {"command": "reset", "description": "🆕 Wipe memory"},
     ]})
-    log(f"🤖 @ {bot['nama']} (@{username}) mengetuk porta")
+    log(f"🤖 {bot['nama']} (@{username}) is knocking on the door")
 
     offset = STORE.get_offset(bot["bot_id"])
     log(f"🤖 {bot['nama']} (@{username}) online (offset cache: {offset})")
@@ -1071,8 +1071,8 @@ def jalankan_bot(bot, indeks):
     giliran = {}
     while not SHUTDOWN.is_set():
         data = tg(bot["token"], "getUpdates", {"offset": offset, "timeout": SHUTDOWN_WAIT}, timeout=SHUTDOWN_WAIT + 10)
-        hasil = (data.get("result") or []) if data.get("ok") else []
-        for upd in hasil:
+        result = (data.get("result") or []) if data.get("ok") else []
+        for upd in result:
             offset = upd["update_id"] + 1
             STORE.set_offset(bot["bot_id"], offset)
             cb = upd.get("callback_query")
@@ -1092,7 +1092,7 @@ def jalankan_bot(bot, indeks):
             log(f"📩 [{tipenya}] {penulis}: {text[:60]}")
             CHATBUF.append(chat_id, "user", text, name=penulis)
             if tipenya in ("group", "supergroup"):
-                simpan_chat(chat_id, chat.get("title") or "grup")
+                simpan_chat(chat_id, chat.get("title") or "group")
             else:
                 simpan_chat(chat_id, f"DM-{penulis}")
 
@@ -1107,7 +1107,7 @@ def jalankan_bot(bot, indeks):
                 threading.Thread(target=tangani_perintah, args=(bot, int(chat_id), cmdv, arg), daemon=True).start()
                 continue
 
-            # 🔀 pilih persona (milik token ini)
+            # 🔀 pick a persona (owned by this token)
             semua = muat_persona()
             PERSONA_GARA.clear()
             PERSONA_GARA.extend(semua)
@@ -1121,7 +1121,7 @@ def jalankan_bot(bot, indeks):
                 idx = giliran.get(kunci := substr(chat_id), 0)
                 dipilih = timku[idx % len(timku)]
                 giliran[kunci] = idx + 1
-                    # py: walau turn rotation, tiap persona tetap punya sesi sendiri
+                    # py: even under turn rotation, each persona still keeps its own session
             if len(timku) > 1:
                 disebut = disebut or dipilih["nama"].lower() in tekstl
 
@@ -1130,7 +1130,7 @@ def jalankan_bot(bot, indeks):
                          if int(s["chat_id"]) == int(chat_id) and s["bot_id"] == bot_id(bot)]
                 for jd_id in hapus:
                     STORE.delete_schedule(jd_id)
-                kirim(bot["token"], chat_id, "🗑️ Semua jadwal di chat ini kubatalkan.")
+                send_msg(bot["token"], chat_id, "🗑️ All schedules in this chat are cancelled.")
                 continue
             m_ing = re.search(r"(?:ingetin|ingatkan|remind\w*)\s*(?:aku|kami|saya)?\s*(besok|lusa)?\s*[a-z ]{0,10}?(?:jam|pukul)\s*(\d{1,2})(?:[.:](\d{2}))?", text, re.I)
             if m_ing and (disebut or balik or private):
@@ -1138,20 +1138,20 @@ def jalankan_bot(bot, indeks):
                 jamc = f"{int(m_ing.group(2)) % 24:02d}:{(m_ing.group(3) or '00')[:2].zfill(2)}"
                 expr, tampil, kapan = buat_one_shot(ofst, jamc)
                 STORE.add_schedule(bot_id(bot), int(chat_id), expr, "once",
-                                   f"Pengingat sekali-tembak dari chat. Kirim pengingat santai satu-dua kalimat "
-                                   f"dengan konteks: {text[:200]}")
-                kirim(bot["token"], chat_id, f"✅ Oke! Aku ingetin di sini pukul {tampil} WIB ({kapan}) 😄")
+                                   f"One-shot reminder from the chat. Send a casual one-to-two-sentence reminder "
+                                   f"using this context: {text[:200]}")
+                send_msg(bot["token"], chat_id, f"✅ Okay! I'll remind you here at {tampil} WIB ({kapan}) 😄")
                 continue
             m_jdw = re.search(r"jadwalkan.*?(?:jam|pukul)\s*(\d{1,2})(?:[.:](\d{2}))?", text, re.I)
             if m_jdw and (disebut or balik or private):
                 jamc = f"{int(m_jdw.group(1)) % 24:02d}:{(m_jdw.group(2) or '00')[:2].zfill(2)}"
                 STORE.add_schedule(bot_id(bot), int(chat_id), jamc, "cron",
-                                   "Kirim pesan menyapa hangat, gaya santai, maks 2 kalimat, akhiri emoji.")
-                kirim(bot["token"], chat_id, f"✅ Oke! Aku menyapa di sini tiap pukul {jamc} 😄")
+                                   "Send a warm greeting message, casual style, max 2 sentences, end with an emoji.")
+                send_msg(bot["token"], chat_id, f"✅ Okay! I'll greet here every day at {jamc} 😄")
                 continue
 
-            # 🤫 Mode [DIAM] default: di grup bot hanya mendengar kecuali dipanggil.
-            # Inisiatif otomatis ditangani initiatif_loop — pemicu acak dihapus (Fase 3).
+            # 🤫 Default [SILENT] mode: in groups the bot only listens unless addressed.
+            # Automatic initiative is handled by initiatif_loop — random triggers were removed (Phase 3).
             if not (disebut or balik or private):
                 PESAN_BARU[int(chat_id)] = {"bot": bot, "ts": time.time()}
                 continue
@@ -1163,49 +1163,49 @@ def jalankan_bot(bot, indeks):
                 try:
                     bident = bot.get("bot_id") or bot["token"].split(":", 1)[0]
                     if METER.over_budget(bident):
-                        log(f"💰 {persona['nama']} stop: budget hari ini penuh "
+                        log(f"💰 {persona['nama']} stopping: today's budget is full "
                             f"({METER.today(bident)}).")
                         return
                     if RATE and not RATE.allow(bident):
-                        log(f"🚦 {persona['nama']} tunda: kuota menit ini penuh")
+                        log(f"🚦 {persona['nama']} postponed: this minute's quota is full")
                         return
                     sid = sesi_untuk(bot, chat_id, persona)
                     ctx = CHATBUF.format_context(chat_id, cfg.get("trigger", {}).get("konteks_n", 15))
-                    beri = (f"[Konteks percakapan terakhir (termasuk pesan yang tidak kamu jawab)]:\n{ctx}\n\n"
-                            f"[Pesan dari {penulis}]: {text}")
+                    prompt = (f"[Recent conversation context (including messages you didn't answer)]:\n{ctx}\n\n"
+                            f"[Message from {penulis}]: {text}")
                     if otonom:
-                        beri = ("[Konteks: kamu diberi ruang inisiatif sendiri. Kalau pesan ini tidak "
-                                "pantas dijawab (obrolan tidak menarik, kamu baru saja bicara, atau "
-                                "mengganggu), jawab HANYA satu kata: DIAM. Kalau pantas, jawab normal.]\n" + beri)
-                    profiler = {"jalan": True}
+                        prompt = ("[Context: you've been given your own initiative space. If this message isn't "
+                                "worth an answer (boring chatter, you just spoke, or it would be intrusive), "
+                                "answer with ONLY one word: SILENT. If it's worth it, answer normally.]\n" + prompt)
+                    profiler = {"running": True}
 
                     def sedang_mengetik():
-                        while profiler["jalan"]:
+                        while profiler["running"]:
                             tg(bot["token"], "sendChatAction", {"chat_id": chat_id, "action": "typing"})
                             time.sleep(4)
 
                     threading.Thread(target=sedang_mengetik, daemon=True).start()
-                    jawab = oc_prompt(sid, beri)
-                    profiler["jalan"] = False
-                    if jawab:
-                        CHATBUF.append(chat_id, "bot", jawab, name=persona["nama"])
+                    answer = oc_prompt(sid, prompt)
+                    profiler["running"] = False
+                    if answer:
+                        CHATBUF.append(chat_id, "bot", answer, name=persona["nama"])
                         sisi = http(f"{API_URL}/api/session/{sid}", auth=AUTH)
                         _c, _t = METER.extract_and_record(bident, sisi.get("data") or {})
-                        log(f"💰 meter: {_c:,.4f} USD, {_t} token hari ini total {METER.today(bident)}")
-                    profiler["jalan"] = False
-                    log(f"🧠 {persona['nama']}-jawab:", (jawab or "⚠️ GAGAL")[:80])
-                    if not jawab:
+                        log(f"💰 meter: {_c:,.4f} USD, {_t} tokens used today, total {METER.today(bident)}")
+                    profiler["running"] = False
+                    log(f"🧠 {persona['nama']} reply:", (answer or "⚠️ FAILED")[:80])
+                    if not answer:
                         return
-                    if jawab.strip().upper().startswith("DIAM"):
-                        log(f"🤫 {persona['nama']} memilih diam (otonom).")
+                    if answer.strip().upper().startswith(("SILENT", "DIAM")):
+                        log(f"🤫 {persona['nama']} chose silent (autonomous).")
                         return
                     if banyak > 1 and not cfg.get("otonomi"):
-                        jawab = f"💬 *{persona['nama']}*\n{jawab}"
-                    kirim(bot["token"], chat_id, jawab)
+                        answer = f"💬 *{persona['nama']}*\n{answer}"
+                    send_msg(bot["token"], chat_id, answer)
                 except Exception as e:
-                    log("❗ error proses:", repr(e))
+                    log("❗ process error:", repr(e))
 
-            otonom = False  # dipanggil langsung → jawab normal; ruang inisiatif di initiatif_loop
+            otonom = False  # called directly → answer normally; the initiative space lives in initiatif_loop
             threading.Thread(target=proses, daemon=True).start()
         SHUTDOWN.wait(0.5)
 
@@ -1223,39 +1223,39 @@ def main():
     except (ImportError, ValueError):
         pass
     if not cfg.get("owner_ids"):
-        raise RuntimeError("owner_ids harus diisi sebelum jalan")
+        raise RuntimeError("owner_ids must be filled in before the bridge can run")
     with open(os.path.join(HERE, "bridge.pid"), "w") as handle:
         handle.write(str(os.getpid()))
     token_ok = [b for b in cfg["bots"]
                 if not b.get("token", "").startswith("ISI") and len(b.get("token", "")) > 20]
     if not token_ok:
-        print("⚠️  Belum ada token bot! Tempel ke config.json lalu jalankan lagi.")
+        print("⚠️  No bot token yet! Paste one into config.json and run again.")
         return
-    migrasi_cron()  # cron.json → tabel schedules, sekali saat hidup
-    pulih_chats_json()  # chats.json warisan → tabel chats
-    sinkron_persona()   # personas.json ↔ tabel personas + cermin
+    migrasi_cron()  # cron.json → schedules table, once at startup
+    pulih_chats_json()  # legacy chats.json → chats table
+    sinkron_persona()   # personas.json ↔ personas table + mirror
     pulihkan_tugas_beku()
     threading.Thread(target=cron_loop, daemon=True).start()
     threading.Thread(target=initiatif_loop, daemon=True).start()
     threading.Thread(target=tugas_loop, daemon=True).start()
     threading.Thread(target=provision_loop, daemon=True).start()
     threading.Thread(target=outbox_loop, daemon=True).start()
-    # 🧍 imunitas: thread mati → dihidupkan ulang otomatis
+    # 🧍 immunity: a thread dies → it is started again automatically
     threads = {}
     def nyalakan_ulang():
         for i, b in enumerate(token_ok):
-            threads[i] = threading.Thread(target=jalankan_bot, args=(b, i), daemon=True)
+            threads[i] = threading.Thread(target=run_bot, args=(b, i), daemon=True)
             threads[i].start()
     nyalakan_ulang()
-    log(f"🚀 bridge jalan, {len(token_ok)} token, personas: {len(muat_persona())}")
+    log(f"🚀 bridge running, {len(token_ok)} tokens, personas: {len(muat_persona())}")
     while not SHUTDOWN.is_set():
         SHUTDOWN.wait(30)
         for i, b in enumerate(token_ok):
             if not threads.get(i) or not threads[i].is_alive():
-                log(f"🔧 thread bot-{i} mati, nyalakan ulang...")
-                threads[i] = threading.Thread(target=jalankan_bot, args=(b, i), daemon=True)
+                log(f"🔧 bot-{i} thread died, restarting...")
+                threads[i] = threading.Thread(target=run_bot, args=(b, i), daemon=True)
                 threads[i].start()
-    log("🛑 bridge selesai, semua thread dibiarkan secu tutup.")
+    log("🛑 bridge stopped, all threads left to shut down on their own.")
 
 
 if __name__ == "__main__":

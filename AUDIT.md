@@ -23,9 +23,9 @@
 ## Fixed in third pass (2026-10-30, Fase 3)
 - Random group replies removed; telegram group messages only trigger a direct reply when mentioned/replied.
 - Initiative loop: every `initiatif_detik` (default 300 s) the model reviews stale chats and either
-  speaks briefly or answers only "DIAM" (never sent to Telegram).
+  speaks briefly or answers only "DIAM" (silent — never sent to Telegram).
 - Task queue (`tasks` table) with step-capped autonomous cycle; crash recovery marks stale
-  "jalan" tasks failed with reason; `/tugas` command verifies end-to-end.
+  "running" tasks failed with reason; `/tugas` command verifies end-to-end.
 - Per-minute rate limiter (sliding 60 s window, per bot, persisted) guards every model call site.
 - Cron model calls now recorded into the usage meter (previously unaccounted).
 
@@ -34,7 +34,7 @@
 - personas.json is now a mirror/inbox: the bot edits the file, the bridge syncs to DB each loop;
   a corrupt/unreadable file cancels the sync instead of mass-deleting.
 - Persona deletion is appended to backup/personas.arsip.jsonl (no deletion without a trace).
-- One-shot reminders: "ingetin aku (besok) jam X" creates kind=once schedules (expr in UTC,
+- One-shot reminders: "remind me (tomorrow) at X" creates kind=once schedules (expr in UTC,
   displayed in WIB); kind=interval also served via due_schedules.
 
 ## Fixed in fifth pass (2026-10-30, Fase 0/5 prep)
@@ -60,9 +60,9 @@
 ## ✅ Resolved (was open)
 - ~~No per-minute rate limits~~ → rate_limiter.py (60 s window, per bot, persisted).
 - ~~Budget caps~~ → daily cap (80 calls/$2) + per-minute cap.
-- ~~Personas deleted without archive~~ → arsip .jsonl jejak.
+- ~~Personas deleted without archive~~ → archived, .jsonl audit trail kept.
 - ~~chats.json/personas.json remain JSON~~ → migrated (personas file kept as inbox mirror).
-- ~~One-shot schedules have no UI trigger~~ → "ingetin aku (besok) jam X" in chat.
+- ~~One-shot schedules have no UI trigger~~ → "remind me (tomorrow) at X" in chat.
 - Initiative behavior is untested against a real group (current tests: private chat only).
 - Bot tokens still plaintext in config.json; rotation pending owner action via BotFather.
 

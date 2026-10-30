@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-ContextBuffer — buffer konteks pembicaraan per-chat (ring).
-Bot bisa "melihat" pesan lama yang tidak lagi menjawabnya: tiap chat
-punya deque terbatas maxlen, snapshot JSON agar tahan restart.
+ContextBuffer — per-chat conversation context buffer (ring).
+The bot can "see" older messages it is no longer replying to: each chat
+holds a bounded deque with maxlen, plus a JSON snapshot so it survives restarts.
 """
 import json
 import os
@@ -12,11 +12,11 @@ from collections import deque
 from datetime import datetime
 
 ROLE_VALID = ("user", "bot")
-POTONG_TEKS = 120  # batas panjang teks per baris konteks
+CLIP = 120  # length limit for each context line's text
 
 
 def _jam(ts):
-    """Ubah ts (epoch atau string) jadi 'HH:MM'. Gagal → '??:??'."""
+    """Turn ts (epoch or string) into 'HH:MM'. On failure → '??:??'."""
     if ts is None:
         return datetime.now().strftime("%H:%M")
     if isinstance(ts, (int, float)):
@@ -25,8 +25,8 @@ def _jam(ts):
         except (OSError, OverflowError, ValueError):
             return "??:??"
     teks = str(ts).strip()
-    # sudah berupa HH:MM (mungkin dengan detik) → pakai langsung
-    for kandidat in (teks, teks[:19]):  # coba utuh, lalu potongan ala ISO
+    # already HH:MM (possibly with seconds) → use as-is
+    for kandidat in (teks, teks[:19]):  # try the full string, then an ISO-style slice
         try:
             if len(kandidat) == 5:
                 return datetime.strptime(kandidat, "%H:%M").strftime("%H:%M")
@@ -37,7 +37,7 @@ def _jam(ts):
             return datetime.fromisoformat(kandidat).strftime("%H:%M")
         except ValueError:
             pass
-    # "YYYY-MM-DD HH:MM[:SS]" gaya umum
+    # "YYYY-MM-DD HH:MM[:SS]" common style
     try:
         return datetime.strptime(teks, "%Y-%m-%d %H:%M:%S").strftime("%H:%M")
     except ValueError:
@@ -50,7 +50,7 @@ def _jam(ts):
 
 
 class ChatBuffer:
-    """Ring buffer pesan per chat_id, thread-safe, bisa disimpan ke JSON."""
+    """Per-chat_id ring buffer of messages, thread-safe, saveable to JSON."""
 
     def __init__(self, maxlen=40, snapshot_path=None):
         self.maxlen = max(1, int(maxlen))
@@ -58,9 +58,9 @@ class ChatBuffer:
         self._buf = {}  # chat_id(str) → deque of dict
         self._lock = threading.Lock()
 
-    # ── inti ─────────────────────────────────────────────────────
+    # ── core ─────────────────────────────────────────────────────
     def append(self, chat_id, role, text, name=None, ts=None):
-        """Tambah pesan ke buffer chat; role dibatasi {'user','bot'}."""
+        """Append a message to the chat buffer; role restricted to {'user','bot'}."""
         if role not in ROLE_VALID:
             return False
         kunci = str(chat_id)
@@ -72,32 +72,32 @@ class ChatBuffer:
         }
         with self._lock:
             dq = self._buf.setdefault(kunci, deque(maxlen=self.maxlen))
-            dq.append(entri)  # deque otomatis buang paling tua saat penuh
+            dq.append(entri)  # the deque automatically drops the oldest entry when full
         return True
 
     def recent(self, chat_id, n=None):
-        """n pesan terakhir (default semua), urut paling lama → paling baru."""
+        """The last n messages (default all), ordered oldest → newest."""
         with self._lock:
             dq = self._buf.get(str(chat_id))
             items = list(dq) if dq else []
         if n is not None:
             items = items[-max(0, int(n)):]
-        return [dict(e) for e in items]  # salinan agar aman dimodifikasi pemanggil
+        return [dict(e) for e in items]  # copies, so the caller can modify them safely
 
     def format_context(self, chat_id, n=None):
-        """String siap-kirim ke model: '[HH:MM] nama: teks' per baris. Kosong → ''. """
+        """String ready to send to the model: '[HH:MM] name: text' per line. Empty → ''. """
         baris = []
         for e in self.recent(chat_id, n):
             teks = str(e.get("text") or "")
-            if len(teks) > POTONG_TEKS:
-                teks = teks[:POTONG_TEKS] + "…"
+            if len(teks) > CLIP:
+                teks = teks[:CLIP] + "…"
             nama = e.get("name") or e.get("role") or "?"
             baris.append(f"[{_jam(e.get('ts'))}] {nama}: {teks}")
         return "\n".join(baris)
 
-    # ── snapshot JSON ────────────────────────────────────────────
+    # ── JSON snapshot ────────────────────────────────────────────
     def save(self):
-        """Simpan semua buffer ke snapshot_path (JSON per chat). Gagal → diam."""
+        """Save all buffers to snapshot_path (JSON per chat). On failure → stay silent."""
         if not self.snapshot_path:
             return False
         try:
@@ -117,7 +117,7 @@ class ChatBuffer:
         return False
 
     def load(self):
-        """Muat snapshot; file rusak/anomali → kosong tanpa exception."""
+        """Load a snapshot; corrupt/anomalous file → empty without raising an exception."""
         if not self.snapshot_path or not os.path.exists(self.snapshot_path):
             return False
         try:

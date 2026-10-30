@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Meteran penggunaan/biaya per bot — pengagard budget harian (finansi).
-- Akumulasi per hari lokal Asia/Jakarta (UTC+7 konstan, tanpa tzdata)
-- Extract aman dari objek sesi/message OpenCode (field hilang → 0)
-- Persist JSON per hari, tahan file rusak, thread-safe
+Per-bot usage/cost meter — the daily budget guard (financial).
+- Accumulated per local Asia/Jakarta day (constant UTC+7, no tzdata)
+- Safe extraction from OpenCode session/message objects (missing fields → 0)
+- JSON persistence per day, resilient to corrupt files, thread-safe
 Import: from usage_meter import UsageMeter
 """
 import json
@@ -12,18 +12,18 @@ import threading
 import time
 from datetime import datetime, timezone, timedelta
 
-JAKARTA = timezone(timedelta(hours=7))  # WIB, offset konstan — no tzdata needed
+JAKARTA = timezone(timedelta(hours=7))  # WIB, constant offset — no tzdata needed
 
 
-def lokal_hari(ts=None):
-    """Tanggal 'YYYY-MM-DD' versi jam lokal Jakarta (UTC+7 konstan)."""
+def local_day(ts=None):
+    """'YYYY-MM-DD' date according to Jakarta local time (constant UTC+7)."""
     if ts is None:
         ts = time.time()
     return datetime.fromtimestamp(ts, JAKARTA).strftime("%Y-%m-%d")
 
 
 def _num(x):
-    """Angka aman: bool/int/float diterima, sisanya 0.0."""
+    """Safe number: bool/int/float accepted, anything else → 0.0."""
     if isinstance(x, bool):
         return float(x)
     if isinstance(x, (int, float)):
@@ -31,8 +31,8 @@ def _num(x):
     return 0.0
 
 
-def _tarik_tokens(v):
-    """Dari field 'tokens': bisa int, dict per jenis, atau sampah → total aman."""
+def _collect_tokens(v):
+    """From the 'tokens' field: may be an int, a per-type dict, or junk → safe total."""
     if isinstance(v, (int, float)) and not isinstance(v, bool):
         return float(v)
     if not isinstance(v, dict):
@@ -49,30 +49,30 @@ def _tarik_tokens(v):
     return total
 
 
-def _ekstrak(obj):
-    """Tarik (cost, tokens) dari dict sesi/message OpenCode; hilang/rusak → 0."""
+def _extract(obj):
+    """Extract (cost, tokens) from an OpenCode session/message dict; missing/broken → 0."""
     if not isinstance(obj, dict):
         return 0.0, 0.0
     cost = _num(obj.get("cost"))
-    tokens = _tarik_tokens(obj.get("tokens"))
-    # objek pembungkus, mis. {"data": {...}} — intip di dalam juga
+    tokens = _collect_tokens(obj.get("tokens"))
+    # wrapper objects, e.g. {"data": {...}} — peek inside as well
     d = obj.get("data")
     if isinstance(d, dict):
-        c2, t2 = _ekstrak(d)
+        c2, t2 = _extract(d)
         cost += c2
         tokens += t2
     return cost, tokens
 
 
 class UsageMeter:
-    """Meteran per bot: {hari: {bot_id: {calls, cost, tokens}}} — lock + persist."""
+    """Per-bot meter: {day: {bot_id: {calls, cost, tokens}}} — lock + persistence."""
 
     def __init__(self, daily_call_cap=None, daily_cost_cap=None, path=None):
         self.daily_call_cap = daily_call_cap
         self.daily_cost_cap = daily_cost_cap
         self.path = path
         self.lock = threading.Lock()
-        self._data = {}   # {hari: {bot_id: {"calls": int, "cost": float, "tokens": float}}}
+        self._data = {}   # {day: {bot_id: {"calls": int, "cost": float, "tokens": float}}}
         if path:
             self._load()
 
@@ -82,27 +82,27 @@ class UsageMeter:
             with open(self.path) as f:
                 d = json.load(f)
             if isinstance(d, dict):
-                # sanitasi: bentuk aneh dibuang diam-diam
-                bersih = {}
-                for hari, bots in d.items():
-                    if isinstance(hari, str) and isinstance(bots, dict):
-                        entri = {}
+                # sanitize: silently discard malformed shapes
+                clean = {}
+                for day, bots in d.items():
+                    if isinstance(day, str) and isinstance(bots, dict):
+                        entry = {}
                         for b, v in bots.items():
                             if isinstance(v, dict):
-                                entri[str(b)] = {
+                                entry[str(b)] = {
                                     "calls": int(_num(v.get("calls"))),
                                     "cost": _num(v.get("cost")),
                                     "tokens": _num(v.get("tokens")),
                                 }
-                        bersih[hari] = entri
-                self._data = bersih
+                        clean[day] = entry
+                self._data = clean
         except FileNotFoundError:
             self._data = {}
         except Exception:
-            self._data = {}  # file rusak → mulai bersih, jangan bikin bridge mati
+            self._data = {}  # corrupt file → start clean, never take the bridge down
 
     def _save(self):
-        """Tulis atomik (tmp → replace) supaya crash tidak meninggalkan file setengah."""
+        """Write atomically (tmp → replace) so a crash never leaves a half-written file."""
         if not self.path:
             return
         tmp = self.path + ".tmp"
@@ -111,41 +111,41 @@ class UsageMeter:
                 json.dump(self._data, f, indent=1)
             os.replace(tmp, self.path)
         except OSError:
-            pass  # disk penuh/dilarang — behavior: jalan terus, meteran sisi-memori
+            pass  # disk full/forbidden — behavior: keep running, in-memory meter only
 
     # ── API ──────────────────────────────────────────────────────
     def record(self, bot_id, calls=1, cost=0.0, tokens=0):
-        """Akumulasi pemakaian bot ke hari lokal (WIB)."""
-        hari = lokal_hari()
+        """Accumulate a bot's usage into the local (WIB) day."""
+        day = local_day()
         with self.lock:
-            entri = self._data.setdefault(hari, {}).setdefault(str(bot_id),
+            entry = self._data.setdefault(day, {}).setdefault(str(bot_id),
                                                               {"calls": 0, "cost": 0.0, "tokens": 0.0})
-            entri["calls"] = int(_num(entri.get("calls"))) + int(_num(calls))
-            entri["cost"] = _num(entri.get("cost")) + _num(cost)
-            entri["tokens"] = _num(entri.get("tokens")) + _num(tokens)
+            entry["calls"] = int(_num(entry.get("calls"))) + int(_num(calls))
+            entry["cost"] = _num(entry.get("cost")) + _num(cost)
+            entry["tokens"] = _num(entry.get("tokens")) + _num(tokens)
             self._save()
 
     def extract_and_record(self, bot_id, obj):
-        """Dari dict sesi/message OpenCode: tarik cost & tokens, catat 1 panggilan."""
-        cost, tokens = _ekstrak(obj)
+        """From an OpenCode session/message dict: extract cost & tokens, record 1 call."""
+        cost, tokens = _extract(obj)
         self.record(bot_id, calls=1, cost=cost, tokens=tokens)
         return cost, tokens
 
     def today(self, bot_id):
-        """Ringkasan pemakaian hari ini (WIB) untuk satu bot."""
-        hari = lokal_hari()
+        """Today's (WIB) usage summary for a single bot."""
+        day = local_day()
         with self.lock:
-            v = (self._data.get(hari) or {}).get(str(bot_id)) or {}
+            v = (self._data.get(day) or {}).get(str(bot_id)) or {}
             return {"calls": int(_num(v.get("calls"))),
                     "cost": _num(v.get("cost")),
                     "tokens": int(_num(v.get("tokens")))}
 
     def over_budget(self, bot_id, calls=0, cost=0.0):
-        """True kalau penambahan kandidat melewati cap hari ini (None = ∞).
-        TepAT DI BATAS masih boleh — hanya lebih yang ditolak."""
-        hari = lokal_hari()
+        """True when the candidate addition would exceed today's caps (None = ∞).
+        Landing exactly AT the limit is still allowed — only more than that is rejected."""
+        day = local_day()
         with self.lock:
-            v = (self._data.get(hari) or {}).get(str(bot_id)) or {}
+            v = (self._data.get(day) or {}).get(str(bot_id)) or {}
             call_ada = int(_num(v.get("calls")))
             cost_ada = _num(v.get("cost"))
             if self.daily_call_cap is not None and call_ada + int(_num(calls)) > self.daily_call_cap:

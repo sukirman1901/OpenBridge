@@ -1,63 +1,69 @@
 # OpenBridge 🌉
 
-**Bridge Telegram ⇄ OpenCode API** — bot Telegram otonom dengan diskusi antar-bot, jadwal cron, tugas mandiri, dan mode `DIAM`. Standar library Python saja (tanpa pip install), SQLite sebagai sumber kebenaran state.
+**Telegram ⇄ OpenCode autonomous bot bridge** — a self-hosted Telegram bot that pairs with the [OpenCode](https://opencode.ai) API to run an autonomous agent: scheduled cron jobs, self-initiated conversation, a goal-driven task queue, and a silent-by-default etiquette in group chats. Pure Python standard library (no `pip install`), with SQLite as the single source of truth for state.
 
-> Nama bot di konfigurasi ini (`Unabot`) hanyalah **contoh persona** — proyek ini open source: clone, ganti nama persona & token bot milikmu di `config.json`, jadilah bot-mu sendiri. 🤖
+> Bot names in the configuration (e.g. `Unabot`) are just **sample personas** — this project is open source: clone it, rename the persona and point `config.json` at your own bot token, and make the bot yours. 🤖
 
-## Fitur
+## Features
 
-| Modul | Fungsi |
+| Module | What it does |
 |---|---|
-| `bridge.py` | Kurir Telegram ⇄ OpenCode: sesi persisten per (persona, chat), mode `[DIAM]`, inisiatif, tugas, backup harian |
-| `store.py` | SQLite (6 tabel): schedules, outbox (retry + backoff), seen (dedupe offset), usage, chats, personas |
-| `scheduler.py` | Cron 5-field, zona WIB (UTC+7) dari epoch, kind `once`/`interval`/legacy |
-| `task_queue.py` | Antrean tugas otonom: goal → plan → act → verify → report |
-| `rate_limiter.py` | Pembatas `max_per_menit` per bot |
-| `usage_meter.py` | Meteran panggilan & token per hari per bot |
-| `context_buffer.py` | Buffer konteks percakapan |
-| `runtime_policy.py` | Guardrail owner-only & izin |
+| `bridge.py` | Core Telegram ⇄ OpenCode courier: persistent sessions per (persona, chat), `[SILENT]` mode (legacy `DIAM` still accepted), initiative loop, task loop, daily backups |
+| `store.py` | SQLite store (6 tables): schedules, outbox (retry + backoff), seen (offset dedup), usage, chats, personas |
+| `scheduler.py` | Cron scheduler: standard 5-field expressions plus legacy `"21:00"` / `"*/N"`, constant **WIB / Asia-Jakarta (UTC+7)** evaluation from epoch |
+| `task_queue.py` | Autonomous task queue: goal → plan → act → verify → report |
+| `rate_limiter.py` | Per-bot sliding-window call-rate limiter (`max_per_menit` per minute) |
+| `usage_meter.py` | Daily per-bot call & token/cost meter with hard budget caps |
+| `context_buffer.py` | Per-conversation context buffer (ring of recent turns) |
+| `runtime_policy.py` | Guardrails: owner-only policy and permission checks |
 
-## Cara pakai (ringkas)
+## Quick start
 
 ```bash
-# 1. Buat bot di @BotFather → salin token ke file
+# 1. Create a bot with @BotFather → copy the token into a file
 echo "123456789:AA..." > bot-1.token
 
-# 2. Isi config.json
-#    "token": "{file:bot-1.token}", "nama": "NamaBotMu",
-#    "owner_ids": [id-telegram-kamu]
+# 2. Fill in config.json
+#    "token": "{file:bot-1.token}", "nama": "YourBotName",
+#    "owner_ids": [your-telegram-user-id]
 
-# 3. Jalankan OpenCode server (opencode serve) lalu:
-./start.sh    # mulai bridge (nohup + pid + lock)
-./stop.sh     # hentikan dengan aman (SIGTERM)
+# 3. Start the OpenCode server (opencode serve), then:
+./start.sh    # launch the bridge (lock-protected)
+./stop.sh     # stop it safely (SIGTERM)
 ```
 
-Isi `config.json` minimal: `bot_ids`, `nama`, `token` (`{file:...}` — token tidak pernah inline), `owner_ids`, `reply_chance` (DIHAPUS — inisiatif via `initiatif_loop`), dll. Contoh lengkap ada di `config.json` repo ini.
+The important `config.json` keys: `bots` (each with `nama`, `token`, `persona`), `owner_ids`, `trigger` (cooldown + initiative interval), `budget` (daily call/cost caps), `rate_limiter`, and `cron`. Tokens are **never inlined** — always use the `{file:...}` indirection. See the repository's own `config.json` for a complete working example.
 
-## Keamanan
+## Security
 
-- Token bot **tidak boleh ditulis di config.json** — selalu pakai indireksi `{file:nama.token}`; `*.token` difilter `.gitignore`.
-- Owner tunggal dikenali dari `owner_ids`; aksi berbahaya butuh konfirmasi owner di chat.
-- Edit persona/hapus data tercatat; backup harian di `backup/gb-YYYY-MM-DD.tar.gz` (keep 7).
+- Bot tokens **must never be written in plain text into `config.json`** — always use the `{file:botname.token}` indirection; `*.token` files are excluded by `.gitignore`.
+- A single owner is recognized via `owner_ids`; non-owner messages and callbacks are ignored (fail-closed), and destructive actions require owner confirmation in chat.
+- Persona edits and deletions are recorded; daily state backups land in `backup/gb-YYYY-MM-DD.tar.gz` (7 kept).
 
-## Struktur
+## Structure
 
 ```
 bridge.py, store.py, scheduler.py, task_queue.py, rate_limiter.py,
 context_buffer.py, usage_meter.py, runtime_policy.py
 config.json, start.sh, stop.sh
-test_*.py (79 unit test) — jalankan: python3 -m unittest discover -p "test_*.py"
-GOAL.md (rencana master fase 0–5) · AUDIT.md (jejak audit)
+84 unit tests in `test_*.py` — run: python3 -m unittest discover -p "test_*.py"
+GOAL.md (master plan, phases 0–5) · AUDIT.md (audit trail)
+```
+
+## Development
+
+```bash
+python3 -m unittest discover -p "test_*.py"
 ```
 
 ## Roadmap
 
-- [x] Fase 1 — SQLite + outbox retry + migrasi JSON → DB
-- [x] Fase 2 — Scheduler cron v2 (WIB) + one-shot + interval
-- [x] Fase 3 — Task queue otonom + initiatif DIAM + rate limiter
-- [ ] Fase 4 — Host cloud (VPS/box) untuk isolasi 24/7
-- [ ] Fase 5 — Provisioning auto-spawn bot baru (button konfirmasi owner)
+- [x] Phase 1 — SQLite store + outbox retry + JSON → DB migration
+- [x] Phase 2 — Scheduler cron v2 (WIB) + one-shot + interval triggers
+- [x] Phase 3 — Autonomous task queue + initiative loop + rate limiter
+- [ ] Phase 4 — Cloud host (VPS/box) for 24/7 isolation
+- [ ] Phase 5 — Auto-provisioning of new bots (owner confirmation button)
 
-## Lisensi
+## License
 
-[MIT](LICENSE) — bebas dipakai, diubah, didistribusikan. Selamat membuat bot-mu sendiri! 🚀
+[MIT](LICENSE) — free to use, modify, and distribute. Go build your own bot! 🚀
