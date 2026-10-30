@@ -91,6 +91,7 @@ def load_opencode_service(path):
 API_URL, AUTH = load_opencode_service(SERVICE)
 
 CHATBUF = ChatBuffer(maxlen=40, snapshot_path=os.path.join(HERE, "konteks.json"))
+MEDIA_DIR = os.path.join(HERE, "media")
 CHATBUF.load()
 _BUD = cfg.get("budget") or {}
 METER = UsageMeter(daily_call_cap=_BUD.get("max_call_per_hari", 80),
@@ -840,6 +841,52 @@ def pulihkan_tugas_beku():
         log(f"📋 task #{st['id']} frozen → failed (recovered)")
 
 
+def ambil_lampiran(bot, msg):
+    """Download a photo/document/video/voice/audio attachment to media/.
+
+    Returns ("<human description>", "<absolute path>") or ("", "") when the
+    message has no (readable) attachment — Telegram's Bot API caps downloads
+    at 20 MB, and downloads bigger than that are skipped honestly.
+    """
+    kind = next((k for k in ("photo", "document", "video", "voice", "audio", "sticker")
+                 if msg.get(k)), None)
+    if not kind:
+        return "", ""
+    obj = msg[kind]
+    if kind == "photo" and isinstance(obj, list):
+        obj = obj[-1]  # Telegram sends size variants — take the largest
+    fid = (obj or {}).get("file_id")
+    if not fid:
+        return "", ""
+    fname = (obj or {}).get("file_name") or ""
+    mime = (obj or {}).get("mime_type") or ""
+    size = (obj or {}).get("file_size") or 0
+    if size > 20 * 1000 * 1000:
+        log("📎 attachment skipped: too big for the Bot API download cap",
+            f"({size/1000/1000:.1f} MB)")
+        return "", ""
+    info = tg(bot["token"], "getFile", {"file_id": fid})
+    fpath = (info.get("result") or {}).get("file_path")
+    if not fpath:
+        log("📎 getFile failed:", str(info)[:100])
+        return "", ""
+    os.makedirs(MEDIA_DIR, exist_ok=True)
+    ext = os.path.splitext(fpath)[1].replace(".", "") or mime.split("/")[-1] or "bin"
+    local = os.path.join(MEDIA_DIR, f"{msg['message_id']}-{kind}.{ext}")
+    url = f"https://api.telegram.org/file/bot{bot['token']}/{fpath}"
+    try:
+        urllib.request.urlretrieve(url, local)
+    except Exception as e:
+        log("📎 download failed:", repr(e)[:90])
+        return "", ""
+    os.chmod(local, 0o600)
+    humans = {"photo": "a photo/image", "document": "a document file",
+              "video": "a video file", "voice": "a voice note", "audio": "an audio file",
+              "sticker": "a sticker"}
+    desc = f"{humans[kind]} {(fname or ext)!r} ({size/1000:.0f} KB)"
+    return f"{desc} saved locally at {local}", local
+
+
 def run_task(bot, t):
     """Work through a single task with a bounded number of model calls; finished → report to the target chat.
 
@@ -1284,7 +1331,17 @@ def run_bot(bot, index):
             chat = msg.get("chat") or {}
             chat_id = chat.get("id")
             text = (msg.get("text") or "").strip()
+            text = text or (msg.get("caption") or "").strip()
             penulis = ((msg.get("from") or {}).get("first_name") or "anon")
+            # attachments: download photo/document/video/voice → prompt mentions the local path
+            lamp_desc, _local = ambil_lampiran(bot, msg)
+            if lamp_desc:
+                text = (text or "").strip()
+                text = f"{text}\n\n[ATTACHMENT received from {penulis}: {lamp_desc}. " \
+                       "If answering needs its content, read the file with your tools " \
+                       "(text documents are readable as-is; images need a vision-capable model; " \
+                       "video/audio cannot be 'watched/heard' — describe metadata only).]".strip()
+                log(f"📎 attachment from {penulis}: {lamp_desc[:80]}")
             if not chat_id or not text:
                 continue
             if not authorized(cfg, msg.get("from") or {}):
