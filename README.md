@@ -36,6 +36,16 @@ The two loops on your phone are lightweight: a per-bot **Telegram thread** (long
 
 ## Installation & Setup
 
+**One line:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sukirman1901/OpenBridge/main/install.sh | sh
+```
+
+That downloads OpenBridge to `~/OpenBridge` and starts an interactive wizard — it asks for your bot token, owner id and bot name, writes a safe `config.json`, checks the OpenCode server, and offers to boot. Prefer reading before piping to shell? Skim [install.sh](install.sh) first.
+
+### Manual setup (what the installer does)
+
 OpenBridge is the **bridge**: it sits between Telegram (where you chat) and a running **OpenCode server** (the AI engine). So the setup is: install OpenCode → run its server → point OpenBridge at it → talk to your bot.
 
 ### 1. Install OpenCode (the AI engine)

@@ -9,6 +9,7 @@ All notable changes to OpenBridge are documented here. This project follows the 
 - Friendly startup error with step-by-step instructions when the OpenCode server is not running yet.
 - README: full installation guide (install OpenCode → `opencode serve` → BotFather → `config.json` → `./start.sh`).
 - Tests moved into a `test/` folder; run them with `python3 -m unittest discover -s test -t .`.
+- One-line installer: `curl -fsSL https://raw.githubusercontent.com/sukirman1901/OpenBridge/main/install.sh | sh` plus an interactive `wizard.py` (token file + config generation, OpenCode server check).
 
 ## [0.1.0] — 2026-10-30
 
