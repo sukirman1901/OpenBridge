@@ -34,22 +34,68 @@ The two loops on your phone are lightweight: a per-bot **Telegram thread** (long
 | `context_buffer.py` | Per-conversation context buffer (ring of recent turns) |
 | `runtime_policy.py` | Guardrails: owner-only policy and permission checks |
 
-## Quick start
+## Installation & Setup
+
+OpenBridge is the **bridge**: it sits between Telegram (where you chat) and a running **OpenCode server** (the AI engine). So the setup is: install OpenCode → run its server → point OpenBridge at it → talk to your bot.
+
+### 1. Install OpenCode (the AI engine)
 
 ```bash
-# 1. Create a bot with @BotFather → copy the token into a file
-echo "123456789:AA..." > bot-1.token
+curl -fsSL https://opencode.ai/install | bash    # macOS / Linux
+# or: npm i -g opencode-ai
+```
 
-# 2. Fill in config.json
-#    "token": "{file:bot-1.token}", "nama": "YourBotName",
-#    "owner_ids": [your-telegram-user-id]
+Log in a model provider and start the API server:
 
-# 3. Start the OpenCode server (opencode serve), then:
-./start.sh    # launch the bridge (lock-protected)
+```bash
+opencode auth login          # pick your provider (Anthropic, OpenAI, …) and paste the key
+opencode serve --port 4096   # keep this running — this is OpenBridge's AI engine
+```
+
+> `opencode serve` writes its URL and password to `~/.local/state/opencode/service.json`. OpenBridge reads that file automatically — that's the whole "connection" step.
+> Running the OpenCode server on another machine/port? Set `OPENBRIDGE_SERVICE_JSON=/path/to/service.json` and OpenBridge will pick it up.
+
+### 2. Create your Telegram bot
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot` → choose a name (this is **your** bot — `Unabot` here is just a sample) and a username.
+2. Copy the token it gives you into a file next to `config.json`:
+
+```bash
+echo "123456789:AA..." > mybot.token     # token file only — never inline it in config.json
+```
+
+3. Find your **Telegram user id** (message [@userinfobot](https://t.me/userinfobot)) — you'll put it in `owner_ids`.
+
+### 3. Configure & start the bridge
+
+```bash
+git clone https://github.com/sukirman1901/OpenBridge.git
+cd OpenBridge
+```
+
+Edit `config.json` — the important keys:
+
+```json
+{
+  "bots": [ { "token": "{file:mybot.token}", "nama": "YourBotName", "persona": "…" } ],
+  "owner_ids": [123456789],
+  "budget":   { "max_call_per_hari": 80, "max_cost_hari": 2.0 },
+  "trigger":  { "cooldown_detik": 15, "initiatif_detik": 300 }
+}
+```
+
+Then start it:
+
+```bash
+./start.sh    # bridge keeps running (nohup + pid + lock files)
 ./stop.sh     # stop it safely (SIGTERM)
 ```
 
-The important `config.json` keys: `bots` (each with `nama`, `token`, `persona`), `owner_ids`, `trigger` (cooldown + initiative interval), `budget` (daily call/cost caps), `rate_limiter`, and `cron`. Tokens are **never inlined** — always use the `{file:...}` indirection. See the repository's own `config.json` for a complete working example.
+Now DM your bot on Telegram — it runs the OpenCode agent behind the scenes: chat, `/jadwal` schedules, `/tugas` autonomous tasks, and it politely stays `[SILENT]` in groups unless it makes itself useful. 🤖
+
+> **Termux/Android?** Yes, this is exactly where OpenBridge was born: a phone running OpenCode's server inside Termux plus this bridge can serve a bot 24/7 at zero cost.
+
+## Configure in depth
 
 ## Security
 

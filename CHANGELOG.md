@@ -2,6 +2,13 @@
 
 All notable changes to OpenBridge are documented here. This project follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+- **`OPENBRIDGE_SERVICE_JSON`** env var: point OpenBridge at an OpenCode server running on another host/port (default remains `~/.local/state/opencode/service.json`).
+- Friendly startup error with step-by-step instructions when the OpenCode server is not running yet.
+- README: full installation guide (install OpenCode → `opencode serve` → BotFather → `config.json` → `./start.sh`).
+
 ## [0.1.0] — 2026-10-30
 
 First public release. 🎉

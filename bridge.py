@@ -37,7 +37,10 @@ from runtime_policy import authorized, bot_id, schedule_owner, schedule_key
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(HERE, "config.json")
-SERVICE = os.path.expanduser("~/.local/state/opencode/service.json")
+# Path of OpenCode's service.json (written by `opencode serve`, containing url + password).
+# Override with the OPENBRIDGE_SERVICE_JSON env var if OpenCode runs on another host/port.
+SERVICE = os.environ.get("OPENBRIDGE_SERVICE_JSON") or \
+    os.path.expanduser("~/.local/state/opencode/service.json")
 CHAT_DB = os.path.join(HERE, "chats.json")
 CRON_FILE = os.path.join(HERE, "cron.json")
 PERSONA_FILE = os.path.join(HERE, "personas.json")
@@ -62,9 +65,30 @@ def resolve_token(t):
 for _b in cfg.get("bots", []):
     _b["token"] = resolve_token(_b.get("token"))
 
-api_pw = json.load(open(SERVICE))
-API_URL = api_pw["url"].rstrip("/")
-AUTH = ("opencode", api_pw["password"])
+def load_opencode_service(path):
+    """Read url + password from OpenCode's service.json (written by `opencode serve`).
+
+    Exits with friendly instructions when the server has never been started —
+    this is the file that connects OpenBridge to its OpenCode instance.
+    """
+    try:
+        with open(path) as fh:
+            svc = json.load(fh)
+        api_url = svc["url"].rstrip("/")
+        auth = ("opencode", svc["password"])
+        return api_url, auth
+    except (OSError, ValueError, KeyError) as exc:
+        raise SystemExit(
+            "[bridge] Cannot reach the OpenCode API server (%s: %s)\n"
+            "  1) install OpenCode:   curl -fsSL https://opencode.ai/install | bash\n"
+            "  2) start its server:   opencode serve --port 4096\n"
+            "  3) OpenCode writes its url + password to %s\n"
+            "     (running on another host/port? set OPENBRIDGE_SERVICE_JSON to that file)\n"
+            "  4) then start OpenBridge again with ./start.sh" % (type(exc).__name__, exc, path)
+        )
+
+API_URL, AUTH = load_opencode_service(SERVICE)
+
 CHATBUF = ChatBuffer(maxlen=40, snapshot_path=os.path.join(HERE, "konteks.json"))
 CHATBUF.load()
 _BUD = cfg.get("budget") or {}
