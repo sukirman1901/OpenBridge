@@ -14,6 +14,12 @@ All notable changes to OpenBridge are documented here. This project follows the 
 - **Attachment intake**: photos, documents, videos, voice notes and audio sent to the bot are downloaded to `media/` (Bot API 20 MB cap) and offered to the agent as local files — text documents are read as-is, images work with vision-capable models, media-only types are described by metadata.
 - **Rich text in Telegram** — chat replies send with Telegram formatting (`**bold**`, `_italic_`, `` `code` `` blocks); a malformed entity falls back to plain text instead of dying on HTTP 400. Streaming messages finalize with formatting too; interim stream edits stay plain (incomplete entities mid-stream would flicker).
 - **Deep-work sessions**: `tugas`/`cron` sessions get a work-mode briefing (chat brevity rules lifted, tools + real verification required, deliverables saved under `hasil/`); new `tugas` config keys — `max_steps` (default 10) and `wait_detik` (default 240).
+- **Stop streaming** — a ⏹ Stop button rides on every streamed message; owner clicks it and the bot finalizes with "stopped by owner" (tries the OpenCode `POST /session/:id/abort` endpoint first, falls back to a bridge-side stop flag that works on OpenCode v2.2 where the endpoint is absent).
+- **"Continue" for clipped replies** — answers longer than `max_char_reply` are no longer silently truncated: a ▶️ Continue button delivers the remainder in 3500-char chunks, chained until done.
+- **Task progress visibility** — claiming a task sends an acknowledgment ("🫡 Task #x claimed… budget N steps") and every 3rd step sends a progress ping ("⚙️ step x/y"), so autonomous work no longer feels like a black hole.
+- **`/new` command** — fresh context without losing the thread: the old session is compacted server-side, an auto-generated handoff summary (max 120 words) is carried into the new session; `/reset` still wipes fully.
+- **Auto-compact** — private chat sessions are compacted via OpenCode `POST /session/:id/compact` after a configurable number of turns (`compact_per_turns`, default 120) to keep the context window healthy over long running chats.
+- **Media janitor** — attachments in `media/` older than 7 days are removed during the daily backup sweep.
 
 ## [0.1.0] — 2026-10-30
 

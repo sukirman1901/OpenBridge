@@ -167,6 +167,8 @@ def oc_create_session(judul):
 # streaming — we fake it with periodic edits, ChatGPT-in-Telegram style).
 STREAM = {}
 STREAM_LOCK = threading.Lock()
+LANJUT = {}      # callback token → clipped remainder of a long answer ("▶️ Lanjut")
+TURNS = {}       # chat_id → processed message count (auto-compact trigger)
 
 def _stream_event(ev):
     """Fold one SSE event dict into the STREAM store."""
@@ -255,13 +257,22 @@ def prompt_stream(token, chat_id, sid, prompt, wait_detik=120):
     placeholder = None
     last_edit = 0.0
     last_text = ""
+    stopped = False
     while time.time() < deadline:
         time.sleep(1.5)
         text, stream_done = stream_text(sid)
+        with STREAM_LOCK:
+            stopflag = bool((STREAM.get(sid) or {}).get("stop"))
+        if stopflag:
+            stopped = True
+            break
         if text and text != last_text:
             now = time.time()
             if placeholder is None:
-                r = tg(token, "sendMessage", {"chat_id": chat_id, "text": text[-3900:]})
+                r = tg(token, "sendMessage",
+                       {"chat_id": chat_id, "text": text[-3900:],
+                        "reply_markup": {"inline_keyboard": [[
+                            {"text": "⏹ Stop", "callback_data": f"st-{sid}"}]]}})
                 if r.get("ok"):
                     placeholder = r["result"]["message_id"]
                     last_edit = now
@@ -275,6 +286,13 @@ def prompt_stream(token, chat_id, sid, prompt, wait_detik=120):
         if not text and time.time() - t0 >= 25:
             break  # SSE gave nothing (or consumer absent) → fallback to polling
     typing_on["alive"] = False
+    if stopped:
+        answer = (last_text + "\n\n⏹ *stopped by owner*").strip()
+        if placeholder is not None:
+            edit_papan(token, chat_id, placeholder, answer[:4000], buttons=[],
+                       parse=True)
+        log("⏹ stream stopped by owner in chat", chat_id)
+        return answer[:cfg["trigger"].get("max_char_reply", 1500)], placeholder, ""
     # authoritative final text from the messages API (supersedes the SSE tail)
     final = ""
     while time.time() < deadline and not final:
@@ -288,15 +306,23 @@ def prompt_stream(token, chat_id, sid, prompt, wait_detik=120):
             time.sleep(1.5)
     if not final:
         final = last_text
-    answer = final[:cfg["trigger"].get("max_char_reply", 1500)]
+    cap = cfg["trigger"].get("max_char_reply", 1500)
+    answer = final[:cap]
+    note = final[cap:]                      # beyond the cap → "▶️ Lanjut" remainder
+    buttons = []
+    if note:
+        tk = os.urandom(4).hex()
+        LANJUT[tk] = note
+        buttons = [("▶️ Lanjut", f"cn-{tk}")]
     if placeholder is not None:
         if answer:
-            edit_papan(token, chat_id, placeholder, answer[:4000], parse=True)
+            edit_papan(token, chat_id, placeholder, answer[:4000],
+                       buttons=buttons, parse=True)
             log("🛰️ stream finished:", answer[:60], "| placeholder:", placeholder)
-            return answer, placeholder
+            return answer, placeholder, note
         tg(token, "deleteMessage", {"chat_id": chat_id, "message_id": placeholder})
-        return answer, None
-    return answer, None
+        return answer, None, note
+    return answer, None, note
 
 def oc_prompt(sid, text, wait_detik=120):
     before = {m.get("id") for m in
@@ -377,7 +403,7 @@ def send_msg(token, chat_id, text, buttons=None, cols=2):
 
 def edit_papan(token, chat_id, msg_id, text, buttons=None, cols=2, parse=False):
     req = {"chat_id": chat_id, "message_id": msg_id, "text": text[:4000]}
-    if buttons:
+    if buttons is not None:  # None = leave markup untouched; [] = clear it
         line = []
         for i in range(0, len(buttons), cols):
             line.append([{"text": l, "callback_data": c} for l, c in buttons[i:i + cols]])
@@ -744,6 +770,15 @@ def backup_harian():
         daftar = sorted(f for f in os.listdir(folder) if f.startswith("gb-") and f.endswith(".tar.gz"))
         for lama in daftar[:-7]:
             os.remove(os.path.join(folder, lama))
+        # 🧹 janitor: attachments older than 7 days are disposable
+        try:
+            if os.path.isdir(MEDIA_DIR):
+                for f in os.listdir(MEDIA_DIR):
+                    p = os.path.join(MEDIA_DIR, f)
+                    if time.time() - os.path.getmtime(p) > 7 * 86400:
+                        os.remove(p)
+        except OSError:
+            pass
         log(f"💾 daily backup for {hari}: {os.path.basename(ar)}")
     except Exception as e:
         log("❗ backup error:", repr(e))
@@ -950,6 +985,10 @@ def run_task(bot, t):
             answer = oc_prompt(sid, prompt, wait_detik)
             sisi = http(f"{API_URL}/api/session/{sid}", auth=AUTH)
             METER.extract_and_record(bid, sisi.get("data") or {})
+            if (langkah % 3 == 2 and langkah < maks - 1 and answer
+                    and not answer.strip().upper().startswith(("SELESAI", "DONE", "GAGAL", "FAILED"))):
+                send_msg(bot["token"], chat_id,
+                         f"⚙️ Task #{t['id']}: step {langkah + 1}/{maks} done — continuing…")
             if not answer:
                 continue
             assessment = answer.strip().upper()
@@ -986,6 +1025,11 @@ def tugas_loop():
             if not t:
                 continue
             log(f"📋 task #{t['id']} claimed: {t['goal'][:60]}")
+            if int(t.get("max_steps") or (cfg.get("tugas") or {}).get("max_steps", 10)) > 1:
+                # visibility: autonomous work shouldn't feel like a black hole
+                send_msg(bot["token"], t["chat_id"],
+                         f"🫡 Task #{t['id']} claimed: {str(t['goal'])[:70]}"
+                         f" (budget {int(t.get('max_steps') or (cfg.get('tugas') or {}).get('max_steps', 10))} steps)")
             run_task(bot, t)
 
 
@@ -994,7 +1038,7 @@ sessions = {}
 sessions_lock = threading.Lock()
 MULAI = time.time()
 
-def sesi_untuk(bot, chat_id, persona, mode="grup"):
+def sesi_untuk(bot, chat_id, persona, mode="grup", handoff=""):
     """Persistent OpenCode session per (persona, chat, mode).
 
     The `mode` is part of the key: casual chats keep the social briefing,
@@ -1078,6 +1122,12 @@ def sesi_untuk(bot, chat_id, persona, mode="grup"):
                 "Start it with DONE (complete) or FAILED (impossible).\n"
             )
         else:
+            if handoff:
+                briefing += (
+                    "════ HANDOFF SUMMARY (context carried from the previous session) ════\n"
+                    f"{handoff}\n"
+                    "Treat this as what already happened before this message.\n"
+                )
             briefing += (
                 "════ HOW YOU SPEAK IN THE GROUP ════\n"
                 "- You do NOT reply to every message: when unaddressed, you listen and may stay SILENT.\n"
@@ -1201,6 +1251,37 @@ def tangani_callback(bot, cb):
         elif d.startswith("pv-y-") or d.startswith("pv-n-"):
             decide_provisioning(bot, chat_id, msg_id, d[3], d[5:])
             catatan("decision processed")
+        elif d.startswith("st-"):
+            # ⏹ Stop: owner aborts a streaming answer
+            sid_st = d[3:]
+            ok = False
+            try:
+                r = http(f"{API_URL}/api/session/{sid_st}/abort", "POST", {}, AUTH)
+                ok = not r.get("error")
+            except Exception:
+                pass
+            with STREAM_LOCK:
+                book = STREAM.get(sid_st)
+                if book is not None:
+                    book["stop"] = True
+            catatan("⏹ stopping…" if ok or book is not None else "nothing to stop")
+            if book is None and not ok:
+                edit_papan(token, chat_id, msg_id, f"⏹ that stream is already finished")
+        elif d.startswith("cn-"):
+            # ▶️ Lanjut: deliver the clipped remainder of a long answer
+            note = LANJUT.pop(d[3:], None)
+            if note is None:
+                catatan("⚠️ remainder expired (bridge restarted)")
+                edit_papan(token, chat_id, msg_id, "⏹ that remainder is gone (bridge restarted)")
+                return
+            part, rest = note[:3500], note[3500:]
+            buttons = None
+            if rest:
+                tk = os.urandom(4).hex()
+                LANJUT[tk] = rest
+                buttons = [("▶️ Lanjut", f"cn-{tk}")]
+            send_msg(token, chat_id, part, buttons=buttons)
+            catatan(f"{len(part)} chars delivered")
         elif d.startswith("jd-"):
             try:
                 jd_id = int(d[3:])
@@ -1285,8 +1366,9 @@ def tangani_perintah(bot, chat_id, cmd, arg, persona=None):
         jns = len(muat_persona())
         model, agent = "default", "?"
         p = persona["nama"]
-        if (p, int(chat_id)) in sessions:
-            d = (http(f"{API_URL}/api/session/{sessions[(p, int(chat_id))]}", auth=AUTH).get("data") or {})
+        kunci_status = (p, int(chat_id), "grup")
+        if kunci_status in sessions:
+            d = (http(f"{API_URL}/api/session/{sessions[kunci_status]}", auth=AUTH).get("data") or {})
             mm = d.get("model")
             if isinstance(mm, dict):
                 model = f"{mm.get('providerID')}/{mm.get('id')}"
@@ -1297,12 +1379,30 @@ def tangani_perintah(bot, chat_id, cmd, arg, persona=None):
               f"• Schedules in this chat: {jml}")
         return
     if cmd == "reset":
-        kunci = (persona["nama"], int(chat_id))
+        kunci = (persona["nama"], int(chat_id), "grup")
         if kunci in sessions:
             http(f"{API_URL}/api/session/{sessions[kunci]}", "DELETE", auth=AUTH)
             sessions.pop(kunci, None)
         sesi_untuk(bot, int(chat_id), persona)
         send_msg(token, chat_id, f"🆕 '{persona['nama']}' memory wiped!")
+        return
+    if cmd == "new":
+        # ♻️ fresh context WITH continuity: summarize the old session, hand it to a new one
+        kunci = (persona["nama"], int(chat_id), "grup")
+        lama = sessions.get(kunci)
+        ringkas = ""
+        if lama:
+            http(f"{API_URL}/api/session/{lama}/compact", "POST", {}, AUTH)  # shrink server-side too
+            ringkas = oc_prompt(lama,
+                                "Write a handoff summary of this conversation: the topics, decisions made, "
+                                "and anything still open. Max 120 words, no small talk.",
+                                90) or ""
+            sessions.pop(kunci, None)   # same key would reuse the old session id otherwise
+        baru = sesi_untuk(bot, int(chat_id), persona, mode="grup", handoff=ringkas)
+        send_msg(token, chat_id,
+                 f"♻️ Fresh context ({len(ringkas)} chars of summary carried over). "
+                 f"Old session archived server-side.")
+        log(f"♻️ /new in chat {chat_id}: new session {baru} (handoff {len(ringkas)} chars)")
         return
     if arg and cmd in ("md", "model"):
         sid = sesi_untuk(bot, int(chat_id), persona)
@@ -1331,6 +1431,7 @@ def run_bot(bot, index):
         {"command": "jadwal", "description": "⏰ Automatic schedules"},
         {"command": "tugas", "description": "📋 Hand off / track tasks"},
         {"command": "status", "description": "📊 Bot status"},
+        {"command": "new", "description": "♻️ Fresh context (summary carried over)"},
         {"command": "reset", "description": "🆕 Wipe memory"},
     ]})
     log(f"🤖 {bot['nama']} (@{username}) is knocking on the door")
@@ -1465,8 +1566,19 @@ def run_bot(bot, index):
                             time.sleep(4)
 
                     threading.Thread(target=sedang_mengetik, daemon=True).start()
-                    answer, stream_msg = prompt_stream(bot["token"], chat_id, sid, prompt)
+                    answer, stream_msg, note = prompt_stream(bot["token"], chat_id, sid, prompt)
                     profiler["running"] = False
+                    TURNS[chat_id] = TURNS.get(chat_id, 0) + 1
+                    ambang = int(cfg.get("compact_per_turns", 120))
+                    if TURNS[chat_id] >= ambang and tipenya in ("private",):
+                        TURNS[chat_id] = 0
+                        r_compact = http(f"{API_URL}/api/session/{sid}/compact", "POST", {}, AUTH)
+                        if not r_compact.get("error"):
+                            log(f"🧹 auto-compact after {ambang} turns (chat {chat_id})")
+                            send_msg(bot["token"], chat_id,
+                                     f"🧹 Context auto-compact at turn {ambang} (memory stays, size shrinks).")
+                        else:
+                            TURNS[chat_id] = ambang  # failed → retry next turn
                     if answer:
                         CHATBUF.append(chat_id, "bot", answer, name=persona["nama"])
                         sisi = http(f"{API_URL}/api/session/{sid}", auth=AUTH)
@@ -1483,11 +1595,24 @@ def run_bot(bot, index):
                         return
                     if banyak > 1 and not cfg.get("otonomi"):
                         answer = f"💬 *{persona['nama']}*\n{answer}"
+                    tomboljut = None
+                    if stream_msg is None and note:
+                        tk = os.urandom(4).hex()
+                        LANJUT[tk] = note
+                        tomboljut = [("▶️ Lanjut", f"cn-{tk}")]
+                    if banyak > 1 and not cfg.get("otonomi"):
                         if stream_msg is not None:
-                            edit_papan(bot["token"], chat_id, stream_msg, answer[:4000], parse=True)
-                            return
+                            tk2 = os.urandom(4).hex() if note else None
+                            if tk2:
+                                LANJUT[tk2] = note
+                            edit_papan(bot["token"], chat_id, stream_msg, answer[:4000],
+                                       buttons=[("▶️ Lanjut", f"cn-{tk2}")] if tk2 else [],
+                                       parse=True)
+                        else:
+                            send_msg(bot["token"], chat_id, answer, buttons=tomboljut)
+                        return
                     if stream_msg is None:
-                        send_msg(bot["token"], chat_id, answer)
+                        send_msg(bot["token"], chat_id, answer, buttons=tomboljut)
                 except Exception as e:
                     log("❗ process error:", repr(e))
 
