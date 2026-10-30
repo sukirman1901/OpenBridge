@@ -739,6 +739,26 @@ def run_cron(entry):
 # ── Daily backup (Phase 0/4: state can always be restored) ─────
 BEKUP = {}
 
+def amankan_berkas_rahasia():
+    """chmod 600 on credential-bearing files so only the bridge user can read them."""
+    kandidat = {"pool.json", "provision.json"}
+    for b in cfg.get("bots", []):
+        t = b.get("token")
+        if isinstance(t, dict) and t.get("file"):
+            kandidat.add(t["file"])
+    try:
+        kandidat.update(n for n in os.listdir(HERE) if n.endswith(".token"))
+    except OSError:
+        pass
+    for name in kandidat:
+        p = os.path.join(HERE, name)
+        if name and os.path.exists(p):
+            try:
+                os.chmod(p, 0o600)
+            except OSError:
+                pass
+
+
 def backup_harian():
     """tar.gz snapshot → backup/; keep the last 7; the DB is copied consistently via the sqlite backup API."""
     hari = datetime.now(WIB).strftime("%Y-%m-%d")
@@ -757,13 +777,20 @@ def backup_harian():
         tujuan_db.close()
         sumber.close()
         ar = os.path.join(folder, f"gb-{hari}.tar.gz")
+        # 🔐 credentials (*.token) are never backed up: restoring them means
+        # re-adding the token by hand — keeping them out of archives limits the
+        # blast radius if a backup is copied or shared.
         with tarfile.open(ar, "w:gz") as tgz:
-            for path in ("config.json", "unabot.token", "personas.json", "cron.json",
-                         "usage.json", "konteks.json", "rate.json", "pool.json",
+            for path in ("config.json", "personas.json", "cron.json",
+                         "usage.json", "konteks.json", "rate.json",
                          "provision.json", "backup/snapshot.db"):
                 p = os.path.join(HERE, path)
                 if os.path.exists(p):
                     tgz.add(p, arcname=path)
+            for secret in ("unabot.token", "pool.json"):
+                sp = os.path.join(HERE, secret)
+                if os.path.exists(sp):
+                    log(f"🔐 {secret} left out of the backup (credential file)")
             if os.path.isdir(MEMORI_DIR):
                 tgz.add(MEMORI_DIR, arcname="memori")
         os.remove(copy)
@@ -1456,6 +1483,10 @@ def run_bot(bot, index):
             text = (msg.get("text") or "").strip()
             text = text or (msg.get("caption") or "").strip()
             penulis = ((msg.get("from") or {}).get("first_name") or "anon")
+            # 🔐 authorization BEFORE any download: strangers can't fill the disk
+            # with repeated uploads (Bot API allows up to 20 MB per file)
+            if not chat_id or not authorized(cfg, msg.get("from") or {}):
+                continue
             # attachments: download photo/document/video/voice → prompt mentions the local path
             lamp_desc, _local = ambil_lampiran(bot, msg)
             if lamp_desc:
@@ -1465,9 +1496,7 @@ def run_bot(bot, index):
                        "(text documents are readable as-is; images need a vision-capable model; " \
                        "video/audio cannot be 'watched/heard' — describe metadata only).]".strip()
                 log(f"📎 attachment from {penulis}: {lamp_desc[:80]}")
-            if not chat_id or not text:
-                continue
-            if not authorized(cfg, msg.get("from") or {}):
+            if not text:
                 continue
             tipenya = chat.get("type", "?")
             log(f"📩 [{tipenya}] {penulis}: {text[:60]}")
@@ -1635,6 +1664,7 @@ def main():
         pass
     if not cfg.get("owner_ids"):
         raise RuntimeError("owner_ids must be filled in before the bridge can run")
+    amankan_berkas_rahasia()
     with open(os.path.join(HERE, "bridge.pid"), "w") as handle:
         handle.write(str(os.getpid()))
     token_ok = [b for b in cfg["bots"]

@@ -110,7 +110,7 @@ Now DM your bot on Telegram — it runs the OpenCode agent behind the scenes: ch
 ## Security
 
 - Bot tokens **must never be written in plain text into `config.json`** — always use the `{file:botname.token}` indirection; `*.token` files are excluded by `.gitignore`.
-- A single owner is recognized via `owner_ids`; non-owner messages and callbacks are ignored (fail-closed), and destructive actions require owner confirmation in chat.
+- A single owner is recognized via `owner_ids`; non-owner messages and callbacks are ignored (fail-closed), and dangerous provisioning actions require an explicit owner confirmation button.
 - Persona edits and deletions are recorded; daily state backups land in `backup/gb-YYYY-MM-DD.tar.gz` (7 kept).
 
 ## Structure

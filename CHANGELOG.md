@@ -20,6 +20,7 @@ All notable changes to OpenBridge are documented here. This project follows the 
 - **`/new` command** — fresh context without losing the thread: the old session is compacted server-side, an auto-generated handoff summary (max 120 words) is carried into the new session; `/reset` still wipes fully.
 - **Auto-compact** — private chat sessions are compacted via OpenCode `POST /session/:id/compact` after a configurable number of turns (`compact_per_turns`, default 120) to keep the context window healthy over long running chats.
 - **Media janitor** — attachments in `media/` older than 7 days are removed during the daily backup sweep.
+- **Security hardening** — authorization now runs before any attachment download (strangers can no longer fill the disk with repeated 20 MB uploads), credential files (`*.token`, `pool.json`, `provision.json`) are chmod 600 at startup and never archived in daily backups, and the agent `opencode.jsonc` sample moved to the real OpenCode `permission` object schema (the plural-array form was silently ignored, which left every deny rule dead).
 
 ## [0.1.0] — 2026-10-30
 
