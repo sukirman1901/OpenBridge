@@ -10,6 +10,7 @@ What this file does (for new contributors):
 - Persona ↔ token split: token≥persona → each persona gets its own real Telegram bot
 Run: ./start.sh
 """
+import base64
 import json
 import os
 import re
@@ -157,6 +158,144 @@ def oc_create_session(judul):
     d = r.get("data") or r
     return d.get("id")
 
+
+# ── Telegram streaming (SSE → editMessageText) ──────────────────
+# OpenCode's event bus streams live `session.text.delta` events. This consumer
+# keeps the accumulating text per session so chat replies can be "streamed"
+# into Telegram by editing one growing message (the Bot API has no native
+# streaming — we fake it with periodic edits, ChatGPT-in-Telegram style).
+STREAM = {}
+STREAM_LOCK = threading.Lock()
+
+def _stream_event(ev):
+    """Fold one SSE event dict into the STREAM store."""
+    data = ev.get("data") or {}
+    sid = data.get("sessionID") or ""
+    if not sid:
+        return
+    with STREAM_LOCK:
+        book = STREAM.setdefault(sid, {"ord": {}, "done": False})
+        t = ev.get("type", "")
+        if t == "session.text.delta":
+            o = data.get("ordinal", 0)
+            book["ord"][o] = book["ord"].get(o, "") + (data.get("delta") or "")
+        elif t == "session.text.ended":
+            o = data.get("ordinal", 0)
+            book["ord"][o] = data.get("text") or book["ord"].get(o, "")
+        elif t == "session.step.started":
+            book["done"] = False
+        elif t == "session.step.ended":
+            book["done"] = True
+
+def stream_text(sid):
+    """(accumulated text, done?) for a session — '' while nothing streamed yet."""
+    with STREAM_LOCK:
+        book = STREAM.get(sid)
+        if not book:
+            return "", False
+        parts = dict(book["ord"])
+        done = book["done"]
+    return "".join(parts[o] for o in sorted(parts)), done
+
+def event_loop():
+    """Consume the /api/event SSE stream; auto-reconnects; cheap when idle."""
+    tok = base64.b64encode(f"{AUTH[0]}:{AUTH[1]}".encode()).decode()
+    while not SHUTDOWN.is_set():
+        try:
+            req = urllib.request.Request(
+                f"{API_URL}/api/event",
+                headers={"Authorization": "Basic " + tok, "Accept": "text/event-stream"})
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                log("📡 event stream connected (SSE → streaming ready)")
+                for raw in resp:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if not payload:
+                        continue
+                    try:
+                        ev = json.loads(payload)
+                    except ValueError:
+                        continue
+                    if str(ev.get("type", "")).startswith("session."):
+                        _stream_event(ev)
+        except Exception as e:
+            log("📡 event stream hiccup:", repr(e)[:90])
+            SHUTDOWN.wait(3)
+
+def prompt_stream(token, chat_id, sid, prompt, wait_detik=120):
+    """POST a prompt and stream the reply into Telegram as a growing message.
+
+    Returns (answer, placeholder_msg_id):
+      - placeholder_msg_id → the reply was already delivered via edits; the
+        caller must NOT send it again.
+      - None               → nothing streamed; caller sends normally.
+    Works standalone too: if the SSE feed gives nothing within 25s the caller
+    falls back to plain polling (same as oc_prompt), so nothing is lost.
+    """
+    before = {m.get("id") for m in
+              (http(f"{API_URL}/api/session/{sid}/message", auth=AUTH).get("data") or [])}
+    http(f"{API_URL}/api/session/{sid}/prompt", "POST", {"text": prompt}, AUTH)
+    # fresh page for this turn: the book may still hold the PREVIOUS turn's
+    # (done, old text) — never confuse an old answer with this turn's stream
+    with STREAM_LOCK:
+        STREAM[sid] = {"ord": {}, "done": False}
+    deadline = time.time() + wait_detik
+    t0 = time.time()
+    typing_on = {"alive": True}
+
+    def typing():
+        while typing_on["alive"]:
+            tg(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"})
+            time.sleep(4)
+
+    threading.Thread(target=typing, daemon=True).start()
+    placeholder = None
+    last_edit = 0.0
+    last_text = ""
+    while time.time() < deadline:
+        time.sleep(1.5)
+        text, stream_done = stream_text(sid)
+        if text and text != last_text:
+            now = time.time()
+            if placeholder is None:
+                r = tg(token, "sendMessage", {"chat_id": chat_id, "text": text[-3900:]})
+                if r.get("ok"):
+                    placeholder = r["result"]["message_id"]
+                    last_edit = now
+                    log("🛰️ streaming to chat", chat_id, "(message", placeholder, ")")
+            elif now - last_edit >= 2.5:
+                edit_papan(token, chat_id, placeholder, text[-3900:])
+                last_edit = now
+            last_text = text
+        if stream_done and text:
+            break
+        if not text and time.time() - t0 >= 25:
+            break  # SSE gave nothing (or consumer absent) → fallback to polling
+    typing_on["alive"] = False
+    # authoritative final text from the messages API (supersedes the SSE tail)
+    final = ""
+    while time.time() < deadline and not final:
+        for m in reversed((http(f"{API_URL}/api/session/{sid}/message", auth=AUTH).get("data") or [])):
+            if m.get("type") == "assistant" and m.get("id") not in before:
+                parts = [p.get("text", "") for p in m.get("content", []) if p.get("type") == "text"]
+                final = " ".join(parts).strip()
+                if final:
+                    break
+        if not final:
+            time.sleep(1.5)
+    if not final:
+        final = last_text
+    answer = final[:cfg["trigger"].get("max_char_reply", 1500)]
+    if placeholder is not None:
+        if answer:
+            edit_papan(token, chat_id, placeholder, answer[:4000])
+            log("🛰️ stream finished:", answer[:60], "| placeholder:", placeholder)
+            return answer, placeholder
+        tg(token, "deleteMessage", {"chat_id": chat_id, "message_id": placeholder})
+        return answer, None
+    return answer, None
 
 def oc_prompt(sid, text, wait_detik=120):
     before = {m.get("id") for m in
@@ -1247,7 +1386,7 @@ def run_bot(bot, index):
                             time.sleep(4)
 
                     threading.Thread(target=sedang_mengetik, daemon=True).start()
-                    answer = oc_prompt(sid, prompt)
+                    answer, stream_msg = prompt_stream(bot["token"], chat_id, sid, prompt)
                     profiler["running"] = False
                     if answer:
                         CHATBUF.append(chat_id, "bot", answer, name=persona["nama"])
@@ -1259,11 +1398,17 @@ def run_bot(bot, index):
                     if not answer:
                         return
                     if answer.strip().upper().startswith(("SILENT", "DIAM")):
+                        if stream_msg is not None:
+                            tg(bot["token"], "deleteMessage", {"chat_id": chat_id, "message_id": stream_msg})
                         log(f"🤫 {persona['nama']} chose silent (autonomous).")
                         return
                     if banyak > 1 and not cfg.get("otonomi"):
                         answer = f"💬 *{persona['nama']}*\n{answer}"
-                    send_msg(bot["token"], chat_id, answer)
+                        if stream_msg is not None:
+                            edit_papan(bot["token"], chat_id, stream_msg, answer[:4000])
+                            return
+                    if stream_msg is None:
+                        send_msg(bot["token"], chat_id, answer)
                 except Exception as e:
                     log("❗ process error:", repr(e))
 
@@ -1298,6 +1443,7 @@ def main():
     sinkron_persona()   # personas.json ↔ personas table + mirror
     pulihkan_tugas_beku()
     threading.Thread(target=cron_loop, daemon=True).start()
+    threading.Thread(target=event_loop, daemon=True).start()   # SSE → Telegram streaming
     threading.Thread(target=initiatif_loop, daemon=True).start()
     threading.Thread(target=tugas_loop, daemon=True).start()
     threading.Thread(target=provision_loop, daemon=True).start()
