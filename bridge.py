@@ -291,7 +291,7 @@ def prompt_stream(token, chat_id, sid, prompt, wait_detik=120):
     answer = final[:cfg["trigger"].get("max_char_reply", 1500)]
     if placeholder is not None:
         if answer:
-            edit_papan(token, chat_id, placeholder, answer[:4000])
+            edit_papan(token, chat_id, placeholder, answer[:4000], parse=True)
             log("🛰️ stream finished:", answer[:60], "| placeholder:", placeholder)
             return answer, placeholder
         tg(token, "deleteMessage", {"chat_id": chat_id, "message_id": placeholder})
@@ -336,15 +336,34 @@ def tg(token, metode, payload=None, timeout=45):
     return http(TG.format(token, metode), "POST" if payload else "GET", payload, timeout=timeout)
 
 
+def _kirim_md(token, method, payload, parse="Markdown"):
+    """tg() with Telegram formatting; on a parse error fall back to plain text.
+
+    Models answer with markdown (bold, code blocks) — Telegram needs an explicit
+    parse_mode, and a malformed entity would otherwise kill the whole message
+    (HTTP 400), so a failed parse is retried without formatting instead.
+    """
+    req = dict(payload)
+    req["parse_mode"] = parse
+    r = tg(token, method, req)
+    # HTTP 400 from Telegram arrives as {"error": 400, "body": "…can't parse entities…"}
+    body_desc = (r.get("description") or r.get("body") or "").lower()
+    if not r.get("ok") and "parse" in body_desc:
+        req.pop("parse_mode")
+        r = tg(token, method, req)
+        log("🪄 markdown parse failed → sent plain:", str(payload.get("text", ""))[:40])
+    return r
+
 def send_msg(token, chat_id, text, buttons=None, cols=2):
     if not buttons:
         for i in range(0, len(text), 3500):
-            r = tg(token, "sendMessage", {"chat_id": chat_id, "text": text[i:i + 3500]})
+            chunk = text[i:i + 3500]
+            r = _kirim_md(token, "sendMessage", {"chat_id": chat_id, "text": chunk})
             if r.get("ok"):
                 log("✅ delivered to", chat_id)
             else:
                 # drop it into the outbox: nothing is lost, retried later with backoff
-                STORE.enqueue(token, chat_id, text[i:i + 3500])
+                STORE.enqueue(token, chat_id, chunk)
                 log("🧵 direct send failed → queued to outbox:", str(r)[:100])
         return
     line = []
@@ -356,14 +375,17 @@ def send_msg(token, chat_id, text, buttons=None, cols=2):
         log("❌ failed to send panel:", str(r)[:150])
 
 
-def edit_papan(token, chat_id, msg_id, text, buttons=None, cols=2):
+def edit_papan(token, chat_id, msg_id, text, buttons=None, cols=2, parse=False):
     req = {"chat_id": chat_id, "message_id": msg_id, "text": text[:4000]}
     if buttons:
         line = []
         for i in range(0, len(buttons), cols):
             line.append([{"text": l, "callback_data": c} for l, c in buttons[i:i + cols]])
         req["reply_markup"] = {"inline_keyboard": line}
-    r = tg(token, "editMessageText", req)
+    if parse and not buttons:
+        r = _kirim_md(token, "editMessageText", req)
+    else:
+        r = tg(token, "editMessageText", req)
     if not r.get("ok"):
         log("✏️ edit:", str(r)[:100])
 
@@ -1462,7 +1484,7 @@ def run_bot(bot, index):
                     if banyak > 1 and not cfg.get("otonomi"):
                         answer = f"💬 *{persona['nama']}*\n{answer}"
                         if stream_msg is not None:
-                            edit_papan(bot["token"], chat_id, stream_msg, answer[:4000])
+                            edit_papan(bot["token"], chat_id, stream_msg, answer[:4000], parse=True)
                             return
                     if stream_msg is None:
                         send_msg(bot["token"], chat_id, answer)

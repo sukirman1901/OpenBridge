@@ -12,6 +12,7 @@ All notable changes to OpenBridge are documented here. This project follows the 
 - One-line installer: `curl -fsSL https://raw.githubusercontent.com/sukirman1901/OpenBridge/main/install.sh | sh` plus an interactive `wizard.py` (token file + config generation, OpenCode server check).
 - **Telegram streaming** for chat replies: the bridge consumes OpenCode's SSE event bus (`/api/event`, `session.text.delta`) and streams the answer into Telegram by editing one growing message (typing indicator kept during generation); graceful fallback to plain polling when the SSE feed is absent.
 - **Attachment intake**: photos, documents, videos, voice notes and audio sent to the bot are downloaded to `media/` (Bot API 20 MB cap) and offered to the agent as local files — text documents are read as-is, images work with vision-capable models, media-only types are described by metadata.
+- **Rich text in Telegram** — chat replies send with Telegram formatting (`**bold**`, `_italic_`, `` `code` `` blocks); a malformed entity falls back to plain text instead of dying on HTTP 400. Streaming messages finalize with formatting too; interim stream edits stay plain (incomplete entities mid-stream would flicker).
 - **Deep-work sessions**: `tugas`/`cron` sessions get a work-mode briefing (chat brevity rules lifted, tools + real verification required, deliverables saved under `hasil/`); new `tugas` config keys — `max_steps` (default 10) and `wait_detik` (default 240).
 
 ## [0.1.0] — 2026-10-30
