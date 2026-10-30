@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "experimental": {
+    "todo": true
+  },
+  "permissions": [
+    { "action": "read", "resource": "*", "effect": "allow" },
+    { "action": "read", "resource": "*.env", "effect": "deny" },
+    { "action": "read", "resource": "**/token*", "effect": "deny" },
+    { "action": "edit", "resource": "*", "effect": "allow" },
+    { "action": "edit", "resource": "backup/**", "effect": "deny" },
+    { "action": "shell", "resource": "*", "effect": "allow" },
+    { "action": "shell", "resource": "sudo *", "effect": "deny" },
+    { "action": "shell", "resource": "rm *", "effect": "deny" },
+    { "action": "shell", "resource": "rm -*", "effect": "deny" },
+    { "action": "shell", "resource": "git push*", "effect": "deny" },
+    { "action": "external_directory", "resource": "*", "effect": "ask" },
+    { "action": "question", "resource": "*", "effect": "allow" },
+    { "action": "subagent", "resource": "*", "effect": "allow" }
+  ],
+  "commands": {
+    "goal": {
+      "description": "Lanjutkan rencana agen otonom",
+      "template": "Baca /root/groupbot/GOAL.md. Cari fase dengan status belum selesai (⬜) paling atas, kerjakan fase itu hingga kriteria Done terpenuhi, jalankan tesnya, segarkan status checkbox di GOAL.md, dan laporkan hasilnya. Patuhi bagian Guardrails. Jangan lompat fase."
+    }
+  }
+}

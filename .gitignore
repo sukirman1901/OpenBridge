@@ -1,0 +1,15 @@
+# runtime & rahasia - jangan ikut repo
+*.token
+bridge.log
+bridge.pid
+bridge.lock
+groupbot.db*
+usage.json
+konteks.json
+rate.json
+pool.json
+provision.json
+backup/
+*.tar.gz
+__pycache__/
+*.pyc

@@ -1,0 +1,33 @@
+{
+  "bots": [
+    {
+      "token": "{file:unabot.token}",
+      "nama": "Unabot",
+      "persona": "Kamu sobat grup yang cerdas, gaya ngobrol gaul santai, suka bercanda tapi tetap membantu. Jawab singkat, maksimal 3 kalimat, bahasa Indonesia."
+    }
+  ],
+  "budget": {
+    "max_call_per_hari": 80,
+    "max_cost_hari": 2.0
+  },
+  "trigger": {
+    "cooldown_detik": 15,
+    "max_char_reply": 1500,
+    "initiatif_detik": 300
+  },
+  "cron": [
+    {
+      "aktif": false,
+      "jam": "21:00",
+      "chat_id": 0,
+      "prompt": "Kirim ringkasan singkat aktivitas grup hari ini, gaya santai, maksimal 4 kalimat, akhiri dengan emoji."
+    }
+  ],
+  "owner_ids": [
+    5331775586
+  ],
+  "provisioning_enabled": false,
+  "rate_limiter": {
+    "max_per_menit": 6
+  }
+}
