@@ -109,14 +109,14 @@ Now DM your bot on Telegram — it runs the OpenCode agent behind the scenes: ch
 bridge.py, store.py, scheduler.py, task_queue.py, rate_limiter.py,
 context_buffer.py, usage_meter.py, runtime_policy.py
 config.json, start.sh, stop.sh
-84 unit tests in `test_*.py` — run: python3 -m unittest discover -p "test_*.py"
+84 unit tests in `test/` — run: python3 -m unittest discover -s test -t .
 GOAL.md (master plan, phases 0–5) · AUDIT.md (audit trail)
 ```
 
 ## Development
 
 ```bash
-python3 -m unittest discover -p "test_*.py"
+python3 -m unittest discover -s test -t .
 ```
 
 ## Roadmap

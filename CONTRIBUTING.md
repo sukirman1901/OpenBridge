@@ -14,7 +14,7 @@ Thanks for your interest in making OpenBridge better! 🎉 This document explain
 ```bash
 git clone https://github.com/sukirman1901/OpenBridge.git
 cd OpenBridge
-python3 -m unittest discover -p "test_*.py"   # all tests must pass
+python3 -m unittest discover -s test -t .   # all tests must pass
 python3 -m py_compile bridge.py               # entrypoint must compile
 ```
 
@@ -24,7 +24,7 @@ No `pip install` is needed — tests run on the standard library alone.
 
 1. Open (or claim) an issue describing the bug or feature first — bigger changes deserve discussion before code.
 2. Create a feature branch: `git checkout -b feat/my-change`.
-3. Keep changes focused: one logical change per PR. If you touch behavior, update or add unit tests in the matching `test_*.py`.
+3. Keep changes focused: one logical change per PR. If you touch behavior, update or add unit tests in the matching file under `test/`.
 4. Run the full test suite before pushing.
 5. Open a PR with a short description of **what** changed and **why**. Link the related issue (`Fixes #123`).
 
