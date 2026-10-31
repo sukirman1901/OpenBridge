@@ -3,7 +3,7 @@
 
 def conversation_briefing(*, name, persona, account_id, chat_id, memory_file,
                           schedule_file, persona_file, provision_file, output_dir,
-                          siblings, mode="grup", handoff=""):
+                          siblings, memories=(), mode="grup", handoff=""):
     text = (
         f"You are '{name}', a member of a Telegram group.\n"
         f"Your persona: {persona}\n\n"
@@ -46,6 +46,15 @@ def conversation_briefing(*, name, persona, account_id, chat_id, memory_file,
         "CAPABILITY 4: INTERNET — you have websearch tools inside your session; when the user needs fresh info\n"
         "(news, prices, sports results), use those tools, don't pretend to know.\n"
     )
+    text += "════ PERSISTENT MEMORY (long-term facts) ════\n"
+    if memories:
+        text += "Facts the owner asked you to always remember (id — fact):\n"
+        text += "\n".join(f"#{row['id']} — {row['text']}" for row in memories) + "\n"
+        text += ("These facts are durable: never contradict them in your answers.\n"
+                 "When a fact no longer holds, tell the owner which #id is outdated.\n")
+    else:
+        text += ("No stored facts yet. The owner can teach you durable facts with /remember <fact>;\n")
+    text += "the owner lists them with /memory and removes one with /forget <id>.\n\n"
     if mode in ("tugas", "cron"):
         text += (
             "════ WORK MODE (autonomous execution) ════\n"

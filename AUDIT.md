@@ -422,3 +422,18 @@ for queued jobs. Durable: only status='queued' (incl. quota-deferred) flips to
 cancelled jobs claim nothing and exit. TDD: test_job_cancel.py (9 tests) written
 first, then store + JobCommands + gateway routing + `jx-` callback. Suite now
 378 OK; compileall clean.
+
+## ✅ Batch 3 — SQLite long-term memory (07:3x UTC+7)
+
+Owners teach durable facts in chat: /remember <fact>, /memory (ids listed,
+chat facts before global), /forget <id> (deactivates; the row stays as audit
+trail; forgetting is bot-scoped). Active memories are injected automatically
+into every conversation briefing's PERSISTENT MEMORY section with a
+never-contradict rule. Additive schema: `memory(id, bot_id, chat_id, text,
+active, created_at)` via CREATE TABLE IF NOT EXISTS (legacy DBs migrate on
+boot). TDD: test_memory.py (6: store roundtrip, empty-text ValueError, global
+facts visible in any chat, limit cap, briefing rendering) and
+test_memory_commands.py (7: command wiring, unknown/foreign id rejection,
+bot scoping) written first. Suite 391 OK; compileall clean. Live-verified:
+reload healthy (getMe @Openuna_bot, OpenCode 2.2.4, quick_check ok, migrations
+3, succeeded jobs 8, memory table present).

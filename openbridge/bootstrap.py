@@ -140,7 +140,8 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
                     call(bot["token"], "editMessageText", {"chat_id": job["conversation_id"],
                         "message_id": job["status_message_id"], "text": f"⚙️ Job #{job['id']} is processing.",
                         "reply_markup": {"inline_keyboard": [[{"text": "Stop", "callback_data": f"st-{sid}"}]]}}, timeout=5)
-        conversations = Conversations(home, config, backend, runtime, personas, approvals, context, meter, rate, send, checkpoint, log)
+        conversations = Conversations(home, config, backend, runtime, personas, approvals, context, meter, rate, send, checkpoint, log,
+                                      memories=lambda identity, chat: store.list_memories(identity, chat))
         provisioning = Provisioning(home, config, accounts, personas, call, send, edit,
                                      lambda bot: app.start_poller(bot), log)
         authorize = lambda user: authorized(config, user)

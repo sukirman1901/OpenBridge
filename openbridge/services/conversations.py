@@ -19,10 +19,12 @@ def session_key(bot, chat_id, persona, mode="grup"):
 
 
 class Conversations:
-    def __init__(self, home, config, backend, runtime, personas, approvals, context, meter, rate, send, checkpoint, log):
+    def __init__(self, home, config, backend, runtime, personas, approvals, context, meter, rate, send, checkpoint, log,
+                 memories=None):
         self.home, self.config, self.backend, self.runtime = home, config, backend, runtime
         self.personas, self.approvals, self.context, self.meter, self.rate = personas, approvals, context, meter, rate
         self.send, self.checkpoint, self.log = send, checkpoint, log
+        self.memories = memories
         self.sessions, self.turns = {}, {}
         self.lock = threading.Lock()
 
@@ -40,7 +42,8 @@ class Conversations:
                 chat_id=chat_id, memory_file=self.personas.memory(persona["nama"]),
                 schedule_file=self.home / "cron.json", persona_file=self.home / "personas.json",
                 provision_file=self.home / "provision.json", output_dir=self.home / "hasil", mode=mode, handoff=handoff,
-                siblings=[row["nama"] for row in self.personas.list() if row["nama"] != persona["nama"]])
+                siblings=[row["nama"] for row in self.personas.list() if row["nama"] != persona["nama"]],
+                memories=self.memories(bot_id(bot), chat_id) if self.memories else ())
         service = ConversationSessions(self.sessions, self.lock,
             lambda title: self.backend.open_session(title, str(self.home), self.permissions()),
             lambda sid, text, timeout: self.backend.run_prompt(sid, text, timeout=timeout),

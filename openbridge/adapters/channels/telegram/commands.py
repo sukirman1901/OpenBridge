@@ -62,6 +62,7 @@ class TelegramCommands:
         if command in ("help", "bantuan", "menu"):
             self.send(bot, chat_id, "📖 Commands: /model /agent /persona /jadwal /tugas /status /new /reset\n"
                 "Private job controls: /jobs /job <id> /result <id> /cancel <id> /resolve <id>.\n"
+                "Long-term memory: /remember <fact> — /memory lists it, /forget <id> removes one.\n"
                 "Routines by chat: 'remind me tomorrow at 5', 'tiap senin jam 8', "
                 "'jeda jadwal 2', 'lanjutkan jadwal 2', 'ubah jadwal 2 ke jam 9', "
                 "'batalkan jadwal 2', 'batalkan semua jadwal'.", buttons=[
@@ -96,6 +97,31 @@ class TelegramCommands:
         elif command == "new":
             self.conversations.fresh(bot, chat_id, persona)
             self.send(bot, chat_id, "♻️ Fresh context prepared with a handoff summary. Old session archived.")
+        elif command == "remember":
+            fact = argument.strip()
+            if not fact:
+                self.send(bot, chat_id, "🧠 What should I remember? Use /remember <fact>.")
+                return
+            identity = self.store.add_memory(bot_id(bot), int(chat_id), fact)
+            self.send(bot, chat_id, f"🧠 Noted as memory #{identity}; it will shape my answers.")
+        elif command == "memory":
+            rows = self.store.list_memories(bot_id(bot), int(chat_id), limit=50)
+            if not rows:
+                self.send(bot, chat_id, "🧠 No stored facts yet. Teach me with /remember <fact>.")
+                return
+            self.send(bot, chat_id, "🧠 Long-term memory (chat facts first, then global):\n" +
+                      "\n".join(f"#{row['id']}{' (global)' if row['chat_id'] is None else ''} — {row['text'][:120]}"
+                                for row in rows) +
+                      "\nForget one: /forget <id>.")
+        elif command == "forget":
+            argument = argument.strip()
+            if not argument.isdigit():
+                self.send(bot, chat_id, "Usage: /forget <id> (see /memory).")
+                return
+            if self.store.forget_memory(int(argument), bot_id(bot)):
+                self.send(bot, chat_id, f"🗑️ Memory #{argument} forgotten.")
+            else:
+                self.send(bot, chat_id, f"📭 Memory #{argument} not found in this bot's active memory.")
         elif command in ("job", "jobs", "result", "resolve"):
             self.send(bot, chat_id, "Use job controls in your private chat with the bot.")
         else:

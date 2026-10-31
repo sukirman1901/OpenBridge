@@ -8,7 +8,9 @@ COMMANDS = [
         ("status", "📊 Bot status"), ("jobs", "📋 Durable job status"),
         ("job", "📋 Job status (alias)"), ("resolve", "🔎 Reconcile an interrupted job"),
         ("result", "📄 Retrieve a saved job result"), ("new", "♻️ Fresh context (summary carried over)"),
-        ("reset", "🆕 Wipe memory"))]
+        ("reset", "🆕 Wipe memory"), ("cancel", "🚫 Cancel a queued job"),
+        ("remember", "🧠 Teach a durable fact"), ("memory", "🧠 List stored facts"),
+        ("forget", "🗑️ Forget one stored fact"))]
 
 
 class TelegramPoller:

@@ -31,6 +31,11 @@ All notable changes to OpenBridge are documented here. This project follows the 
   Cancel button on `/job <id>`) cancels durable work that has not started
   running — including quota-deferred jobs. Running jobs still can't be
   cancelled here; the claim fence keeps an already-submitted worker safe.
+- **Long-term memory (SQLite)**: owners can teach durable facts with
+  `/remember <fact>`, list them (`/memory`), and retire one (`/forget <id>`;
+  deactivating keeps the audit trail). Active chat-specific facts (with global
+  ones after them) are injected into every conversation briefing as a
+  PERSISTENT MEMORY section the agent must never contradict.
 
 ### Fixed
 - **One-shot anchors are timezone-proof**: stored one-shot expressions are

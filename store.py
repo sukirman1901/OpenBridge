@@ -34,6 +34,14 @@ CREATE TABLE IF NOT EXISTS schedules (
     last_fired  TEXT,
     created_at  TEXT
 );
+CREATE TABLE IF NOT EXISTS memory (
+    id          INTEGER PRIMARY KEY,
+    bot_id      TEXT NOT NULL,
+    chat_id     INTEGER,
+    text        TEXT NOT NULL,
+    active      INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT
+);
 CREATE TABLE IF NOT EXISTS outbox (
     id          INTEGER PRIMARY KEY,
     token       TEXT NOT NULL,
@@ -237,6 +245,36 @@ class Store:
             "UPDATE schedules SET expr = ?, kind = ?, prompt = ? WHERE id = ?",
             (str(expr), kind, str(prompt), schedule_id))
         return cur.rowcount > 0
+
+    # ── structured long-term memory ──────────────────────────────
+    def add_memory(self, bot_id, chat_id, text):
+        """Store one durable fact for a bot (chat_id None = applies everywhere)."""
+        text = str(text).strip()
+        if not text:
+            raise ValueError("Memory text must not be empty")
+        cur = self._exec(
+            "INSERT INTO memory(bot_id, chat_id, text, active, created_at) VALUES(?,?,?,1,?)",
+            (str(bot_id), None if chat_id is None else int(chat_id), text[:2000], iso_now()))
+        return cur.lastrowid
+
+    def list_memories(self, bot_id, chat_id=None, limit=20):
+        """Active memories for a bot: chat-specific first (oldest first), then global facts."""
+        return self._query(
+            "SELECT * FROM memory WHERE bot_id = ? AND active = 1 "
+            "AND (chat_id IS NULL OR chat_id = ?) "
+            "ORDER BY chat_id IS NULL ASC, id ASC LIMIT ?", [str(bot_id), chat_id, int(limit)])
+
+    def forget_memory(self, memory_id, bot_id=None):
+        """Deactivate one active memory row without destroying the audit trail.
+
+        Only rows not already forgotten count: a second forget of the same id
+        returns False, while the deactivated row stays in the table for audit.
+        With bot_id set, forgetting is scoped to that bot's rows."""
+        query, params = "UPDATE memory SET active = 0 WHERE id = ? AND active = 1", [memory_id]
+        if bot_id is not None:
+            query += " AND bot_id = ?"
+            params.append(str(bot_id))
+        return self._exec(query, params).rowcount > 0
 
     # ── outbox ───────────────────────────────────────────────────
     def enqueue(self, token, chat_id, text, now=None):
