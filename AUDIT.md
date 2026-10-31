@@ -493,3 +493,20 @@ TDD: test_mcp_template.py (4 tests) written first (three servers present,
 type/enabled declared, no live credentials in the template, documented
 GITHUB_PERSONAL_ACCESS_TOKEN env name). Suite 410 OK; compileall clean.
 No reload needed (config-only change); running bridge untouched.
+
+## ✅ Deployment v0.4.0 + typing indicator (08:1x UTC+7)
+
+Tag v0.4.0 created over the six hardening batches (a8dcabe…64587f1) and pushed
+with main. Release commit 381f005 (CHANGELOG restructured: the batch items moved
+into their own [0.4.0] section). Owner report "typing indicator disappeared":
+verified by log + code reading that sendChatAction was never implemented — the
+indicator had never existed, messages themselves did arrive (jobs #13–16 all
+succeeded and confirmed deliveries). Added gateway.typing_action: a daemon
+thread sends sendChatAction "typing" every 4 s from message-ack until the reply
+path leaves execute(), best-effort (channel failures end the cosmetic loop,
+never the job); commands return early and are unaffected.
+
+TDD: test_typing.py (3 tests) written first (loop sends typing and stops,
+survives a failing channel, execute triggers typing before answer). Suite 413
+OK; compileall clean. Reload healthy (single supervisor/poller, bot online
+offset 19758739).

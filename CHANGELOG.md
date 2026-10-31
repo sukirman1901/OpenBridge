@@ -51,6 +51,9 @@ All notable changes to OpenBridge are documented here. This project follows the 
 - **MCP connector template**: `deploy/mcp.example.jsonc` documents mergeable
   `mcp` entries for Gmail, Google Drive, and GitHub with `{file:*}` credential
   indirection and per-server setup notes; a unit test keeps real secrets out.
+- **Typing indicator**: while the agent prepares its answer, the bot sends
+  `sendChatAction` (`typing…`) for the duration of the work, best-effort and
+  non-blocking — pacing the presence loop never delays or breaks a job.
 
 ### Fixed
 - **One-shot anchors are timezone-proof**: stored one-shot expressions are

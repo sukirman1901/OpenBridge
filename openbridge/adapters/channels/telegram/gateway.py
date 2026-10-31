@@ -53,6 +53,16 @@ class TelegramGateway:
             self.jobs.acknowledge(job_id, acknowledgement)
         self.log("Persisted Telegram job", job_id)
 
+    def typing_action(self, bot, chat_id, done):
+        """Best-effort typing indicator while the agent works; stops on reply."""
+        while not done.is_set():
+            try:
+                self.call(bot["token"], "sendChatAction",
+                          {"chat_id": chat_id, "action": "typing"}, timeout=5)
+            except Exception:
+                return  # typing is cosmetic; never let it break the job
+            done.wait(4)
+
     def execute(self, bot, update, username):
         callback = update.get("callback_query")
         if callback:
@@ -79,14 +89,19 @@ class TelegramGateway:
             parts = text.split(maxsplit=1)
             self.commands.handle(bot, chat_id, parts[0].lstrip("/").split("@")[0], parts[1] if len(parts) > 1 else "")
             return
-        scheduled = self.schedules.interpret(bot_id(bot), chat_id, text, addressed)
-        if scheduled:
-            self.send(bot, chat_id, scheduled)
-            return
-        if not addressed:
-            job = self.runtime.current_job()
-            if job:
-                self.jobs.note_initiative(conversation_key(bot, chat_id), job["id"],
-                    self.context.format_context(chat_id, self.config.get("trigger", {}).get("konteks_n", 15)))
-            return
-        self.conversations.answer(bot, chat_id, sender, text, chat.get("type"))
+        typing_done = threading.Event()
+        threading.Thread(target=self.typing_action, args=(bot, chat_id, typing_done), daemon=True).start()
+        try:
+            scheduled = self.schedules.interpret(bot_id(bot), chat_id, text, addressed)
+            if scheduled:
+                self.send(bot, chat_id, scheduled)
+                return
+            if not addressed:
+                job = self.runtime.current_job()
+                if job:
+                    self.jobs.note_initiative(conversation_key(bot, chat_id), job["id"],
+                        self.context.format_context(chat_id, self.config.get("trigger", {}).get("konteks_n", 15)))
+                return
+            self.conversations.answer(bot, chat_id, sender, text, chat.get("type"))
+        finally:
+            typing_done.set()
