@@ -46,8 +46,12 @@ class TelegramGateway:
         acknowledgement = None
         try:
             if not callback and self.addressed(message, bot.get("username"), text):
+                blocked = self.jobs.is_blocked(conversation_key(bot, chat["id"]))
+                notice = ("⏸ Queue paused: an earlier request was interrupted. "
+                          "Your message is saved, but is not running. Use /jobs to review."
+                          if blocked else "⏳ Queued…")
                 result = self.call(bot["token"], "sendMessage", {"chat_id": chat["id"],
-                    "text": "⏳ Processing…"}, timeout=8)
+                    "text": notice}, timeout=8)
                 acknowledgement = (result.get("result") or {}).get("message_id") if result.get("ok") else None
         finally:
             self.jobs.acknowledge(job_id, acknowledgement)

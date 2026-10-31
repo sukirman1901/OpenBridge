@@ -7,10 +7,12 @@ from openbridge.adapters.channels.telegram.gateway import TelegramGateway
 
 
 def make_gateway():
-    return TelegramGateway(config=Mock(), call=Mock(), jobs=Mock(), store=Mock(),
+    gateway = TelegramGateway(config=Mock(), call=Mock(), jobs=Mock(), store=Mock(),
         runtime=Mock(), context=Mock(), conversations=Mock(), commands=Mock(),
         media=Mock(), schedules=Mock(), authorize=Mock(), send=Mock(),
         controls=Mock(), stopped=Mock(), log=Mock())
+    gateway.jobs.is_blocked.return_value = False
+    return gateway
 
 
 class TypingLoop(unittest.TestCase):
@@ -68,7 +70,21 @@ class TypingLoop(unittest.TestCase):
         g.call.return_value = {"ok": True, "result": {"message_id": 99}}
         g.accept({"token": "999:t"}, {"update_id": 1, "message": {
             "from": {"id": 2}, "chat": {"id": 777, "type": "private"}, "text": "hi"}})
-        self.assertEqual(g.call.call_args.args[2]["text"], "⏳ Processing…")
+        self.assertEqual(g.call.call_args.args[2]["text"], "⏳ Queued…")
+        g.jobs.acknowledge.assert_called_once_with(14, 99)
+
+    def test_blocked_conversation_reports_review_not_processing(self):
+        g = make_gateway()
+        g.authorize.return_value = True
+        g.jobs.accept.return_value = (14, True)
+        g.jobs.is_blocked.return_value = True
+        g.call.return_value = {"ok": True, "result": {"message_id": 99}}
+        g.accept({"token": "999:t"}, {"update_id": 1, "message": {
+            "from": {"id": 2}, "chat": {"id": 777, "type": "private"}, "text": "hi"}})
+        notice = g.call.call_args.args[2]['text']
+        self.assertIn('paused', notice)
+        self.assertIn('/jobs', notice)
+        self.assertNotIn('Processing', notice)
         g.jobs.acknowledge.assert_called_once_with(14, 99)
 
     def test_unaddressed_group_message_does_not_show_typing(self):

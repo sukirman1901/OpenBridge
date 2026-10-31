@@ -1,5 +1,15 @@
 # Bridge audit
 
+## Truthful queue status (2026-10-31)
+
+Owner reported perpetual Processing. Jobs 26 and 27 were queued, not running:
+interrupted job 23 fenced the conversation. Intake now says Queued, or explicitly
+Queue paused when an interrupted job blocks the conversation; Processing is only
+set once execution starts. Added a red-first blocked-intake regression test.
+Full suite: 419 tests pass. Updated both existing Telegram status messages for
+26/27 to explain the blocked queue (Telegram confirmed both edits). No jobs were
+replayed, cancelled, resolved, or removed to achieve this cosmetic correction.
+
 ## Natural-language file and schedule regression (2026-10-31)
 
 Read-only inspection of Telegram history showed ordinary requests for a 2027
