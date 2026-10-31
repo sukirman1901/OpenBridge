@@ -25,6 +25,11 @@ class ApprovalRelay:
             with self.lock:
                 self.routes[sid] = (bot, int(chat_id))
 
+    def owns(self, sid, token, chat_id):
+        with self.lock:
+            route = self.routes.get(sid)
+            return bool(route and route[0]["token"] == token and route[1] == int(chat_id))
+
     @staticmethod
     def path(sid, rid=None):
         path = '/api/session/' + quote(sid, safe='') + '/permission'

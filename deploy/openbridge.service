@@ -1,0 +1,28 @@
+[Unit]
+Description=OpenBridge autonomous agent runtime (Telegram adapter)
+Documentation=file:///root/groupbot/README.md
+After=network-online.target
+Wants=network-online.target
+# Crash-exits restart automatically; repeated failures within this window stop
+# the unit for operator review instead of spinning forever.
+StartLimitIntervalSec=180
+StartLimitBurst=6
+
+[Service]
+Type=simple
+WorkingDirectory=/root/groupbot
+ExecStart=/root/groupbot/start.sh
+Restart=on-failure
+RestartSec=5
+# Observed graceful drain can take ~45s (workers, auxiliaries, reconciliation);
+# only past this point systemd escalates to SIGKILL.
+TimeoutStopSec=120
+# The unit runs the trusted application as configured; finer OS sandboxing
+# (unprivileged user, immutable state) is a dedicated future task.
+NoNewPrivileges=true
+# Keep the existing operator ergonomics: stdout/stderr still reach bridge.out.
+StandardOutput=append:/root/groupbot/bridge.out
+StandardError=append:/root/groupbot/bridge.out
+
+[Install]
+WantedBy=multi-user.target

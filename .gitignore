@@ -1,17 +1,30 @@
-# runtime & rahasia - jangan ikut repo
+# ===== Rahasia (jangan pernah masuk repo) =====
 *.token
-bridge.log
-bridge.pid
-bridge.lock
-groupbot.db*
-usage.json
-konteks.json
-rate.json
+config.json
 pool.json
 provision.json
+!deploy/config.example.json
+
+# ===== State operasi & data pengguna =====
+groupbot.db
+groupbot.db-wal
+groupbot.db-shm
+bridge.pid
+bridge.lock
+bridge.out
+bridge.log
+konteks.json
+cron.json
+personas.json
+rate.json
+usage.json
+chats.json.imported
 backup/
-*.tar.gz
-__pycache__/
-*.pyc
 hasil/
 media/
+memori/
+
+# ===== Build / cache =====
+__pycache__/
+*.pyc
+.derby/

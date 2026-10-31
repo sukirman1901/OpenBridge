@@ -1,0 +1,17 @@
+{
+  "_comment": "Copy this file to config.json and fill in your values. config.json itself must never be committed: tokens stay in private {file:*.token} files.",
+  "bots": [
+    {
+      "nama": "Una",
+      "persona": "You are Una, a helpful daily assistant.",
+      "token": "{file:una.token}"
+    }
+  ],
+  "owner_ids": [123456789],
+  "trigger": {},
+  "runtime": {
+    "interactive_workers": 1,
+    "background_workers": 1
+  },
+  "retention": { "days": 30 }
+}

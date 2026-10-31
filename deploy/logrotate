@@ -1,0 +1,11 @@
+# Both files: bridge.log is re-opened per line by the application, bridge.out is
+# a held stdout fd, so copytruncate is the uniform safe strategy.
+/root/groupbot/bridge.log /root/groupbot/bridge.out {
+	daily
+	rotate 7
+	compress
+	delaycompress
+	missingok
+	notifempty
+	copytruncate
+}

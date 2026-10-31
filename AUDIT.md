@@ -1,5 +1,250 @@
 # Bridge audit
 
+## Deployment of explicit bootstrap (2026-10-31)
+- Full suite before deployment: 323 unit tests OK; `python3 -m compileall -q`
+  over `bridge.py` and `openbridge/` clean.
+- Deployed via `stop.sh`, lock acquisition, and `start.sh` (durable Python run).
+- Post-restart health: Telegram `getMe` confirms `@Openuna_bot`; all 13 commands
+  registered through the new poller; OpenCode `/api/info` reachable on 2.2.4;
+  SQLite `quick_check=ok`; migration versions unchanged at [(1,), (2,), (3,)];
+  no running jobs; job states interactive/succeeded ×7; legacy counts preserved
+  (schedules 0, tasks 2, seen 1, outbox 1, usage 0, chats 1, personas 1).
+- New implementation is live. Remaining future work unchanged: cross-channel
+  persistence, WhatsApp adapter, retention, priority reminder lanes, OS
+  isolation (supervision itself was added separately, see the next entry).
+
+## Priority reminder lanes (2026-10-31)
+- Reminder semantics without a schema change (migration versions stay 3):
+  schedule-kind jobs may pass the same-lane conversation leader in both
+  `pending()` and `claim()` — the interrupted fence still hides reminders until
+  an owner reconciles; other kinds keep full conversation leadership.
+- `pending()` orders earliest reminders before the background backlog window,
+  so a large background batch cannot push a reminder past the SQL LIMIT.
+- `_pump_lane` submits reminders under a dedicated in-memory dispatcher key
+  (`"reminder"`), meaning long tasks in the same chat never serialize behind
+  reminders or vice versa; a reminder only waits for an already-running
+  reminder of that chat.
+- `claim_delivery()` now orders interactive first, then schedule-kind, then
+  other background deliveries, so reminder messages jump a pending task-output
+  backlog.
+- Eight tests: ordering, leadership bypass, non-schedule leadership unchanged,
+  fencing intact, self-serialization, delivery priority, interactive acks
+  precedence, and end-to-end concurrency (a reminder completes while a task
+  holds its worker on a gate). Full suite: **341 tests OK**; `compileall` clean.
+- Deployed under `supervise.sh`; health same as previous deployments
+  (`@Openuna_bot`, `quick_check=ok`, `foreign_key_check` empty, migration
+  versions [(1,), (2,), (3,)], 7 succeeded jobs preserved).
+
+## Settled-job retention (2026-10-31)
+- Added `JobStore.prune_terminal`: one transaction per job deletes a terminal
+  job (succeeded/failed/cancelled) older than the window only when every
+  delivery is final (sent/dead), removing its steps, runs, deliveries, trigger,
+  and inbox rows. Interrupted/queued/running jobs and pending/sending/uncertain
+  deliveries are never pruned; ingress cursors are never pruned. Reconciliation
+  via `/resolve` refreshes `updated_at`, so a mistaken cancel ages out normally.
+- Configure with `"retention": {"days": N}` (default 30, accepted 1–365;
+  bools/strings/fractions rejected before any state opens). The bootstrap runs
+  the prune every 6 hours and logs the count; `config.py` validates that
+  `retention` is an object.
+- Ten new tests cover: full-row pruning with hierarchy, failed/cancelled via
+  real acceptance+finish or acceptance+claim+`/resolve` paths, age reset after
+  reconciliation, batch limit oldest-first, unfinished states and ambiguous
+  deliveries retained, dead deliveries prunable, and configuration boundaries.
+  Full suite: **333 tests OK**; `compileall` clean.
+- Deployed under `supervise.sh`; post-restart health identical to the previous
+  deployment (Telegram `@Openuna_bot` confirmed, SQLite `quick_check=ok`,
+  migrations [(1,), (2,), (3,)], 7 succeeded interactive jobs intact — all
+  younger than the window, so nothing was pruned today).
+
+## Process supervision deployment (2026-10-31)
+- This host is Ubuntu proot under Termux/Android: no systemd as PID 1 and no
+  cron, so `systemctl` cannot operate. `deploy/openbridge.service` and
+  `deploy/logrotate` are kept for hosts that do run systemd/logrotate; the
+  logrotate file is also installed at `/etc/logrotate.d/openbridge` but stays
+  dormant until a scheduler runs it.
+- Added `supervise.sh`: a detached supervision loop with systemd
+  "Restart=on-failure" semantics — abnormal exit restarts with exponential
+  backoff (5 s doubling, 5 min cap, reset after 30 min of stability); a clean
+  exit ends supervision so a deliberate `./stop.sh` is never fought over.
+  The single-poller lock prevents supervised and manual launches from running
+  two pollers on one token (verified live: a manual run during supervision
+  fails fast instead of double-polling).
+- Live verification: SIGKILL of the bridge (exit 137) was detected and the
+  bridge auto-recovered, coming back online with the persisted update offset;
+  a deliberate `./stop.sh` drained cleanly (~53 s) and correctly ended
+  supervision instead of restarting. Final state: supervised bridge online,
+  `getMe` confirms @Openuna_bot with 13 registered commands.
+- Boot persistence inside the Termux/proot container remains manual: after a
+  device or container restart, run `./supervise.sh &` once (Termux:Boot is a
+  possible follow-up outside this container). Note the OpenCode backend process
+  is managed by the harness environment and is not supervised here.
+
+## Explicit bootstrap and thin entry point (2026-10-31)
+- Replaced eager root globals with a seven-line entry point and explicit
+  bootstrap.create_application(). Configuration, SQLite, caches, runtime, and
+  channel/backend clients are per-instance; imports create no runtime state.
+- Extracted ordinary commands/callbacks, Telegram ingress/media/approval UI,
+  conversations, personas, provisioning, schedules, maintenance, and job routing.
+  This is responsibility-based composition, not a renamed monolithic bridge.
+- Existing storage/limiter/context/approval modules remain compatibility libraries.
+  Factory partial failures close opened connections; shutdown closes resources
+  only once all workers/auxiliary threads have stopped.
+- Tests now construct isolated real component graphs instead of patching legacy
+  bridge globals. Old behavioral/security assertions are retained at service boundaries.
+- Retired unused legacy SSE/token-streaming paths; durable terminal-result delivery
+  remains the only normal response path. Fresh-context lookup/title and failed
+  reset ownership handling corrected while extracting the conversation controller.
+- Hardened account-scoped menus/Stop, owner-bound once-only provisioning, atomic
+  config/mirror/backup updates, private media paths, and unknown inbox retention.
+- No database migration, account credential rotation, new channel, OS supervisor,
+  or sandbox added. Legacy persisted schema and script/state paths remain intact.
+- Live isolated factory diagnostic against OpenCode passed: saved Telegram update
+  produced a terminal FACTORY_OK result and durable delivery intent. No Telegram
+  message was sent; its disposable, tool-denied session was cleaned up.
+
+## Module-boundary extraction (2026-10-31)
+- Extracted explicit configuration loading, validated worker settings, private
+  credential repr handling, and sanitized backend registration errors.
+- Added an injected Application lifecycle with signal restoration, shared worker
+  drain deadline, context cleanup, and one per-account poller registry shared by
+  provisioning and supervision. No process supervisor is introduced.
+- Extracted Telegram polling and output formatting/classification, generic
+  job-output capture, conversation/background sessions, compatibility briefing,
+  and scoped owner job controls. New modules never import the legacy bridge.
+- Output services and controllers check channel/account/conversation scope.
+  Session reuse/idle/policy operations now use the execution adapter contract.
+- Session-list lookup failures cannot silently create duplicates. Telegram plain
+  fallback requires a confirmed HTTP 400 parse rejection, avoiding ambiguous send replay.
+- Preserved launch paths, existing token-file/configuration formats, session
+  titles, queues, and delivery semantics. No database migration in this pass.
+- Remaining: eager root bootstrap, regular command/callback panels, persona and
+  provisioning state, maintenance, and legacy streaming. bridge.py is not yet
+  claimed to be a fully thin entry point or WhatsApp-ready implementation.
+- Verification: 296 tests and compileall pass, including clean import boundaries,
+  output routing, backend idle failures, signal restoration, and duplicate-poller
+  prevention. Scoped restart succeeds with the new Application and poller.
+- Real OpenCode /api/info and Telegram getMe succeed; poller reports online.
+  SQLite quick_check passes, migration versions stay 1/2/3, all legacy table
+  counts and seven completed job states are preserved. No diagnostic chat sent.
+
+## Reserved chat/background execution lanes (2026-10-31)
+- Source and consistent private database backups saved before the change.
+- Migration 3 assigns persisted lanes by job kind without replaying or changing
+  existing states. Database claim/pending checks enforce FIFO per lane while
+  interrupted work continues to fence the entire conversation.
+- Separate bounded worker pools reserve chat capacity independently of long
+  background tasks. Independent query windows prevent backlog-limit starvation.
+- Ready interactive deliveries get priority; result chunk order and ambiguous
+  send quarantine remain unchanged. In-flight network requests are not preempted.
+- Shutdown stops new claims and drains both pools under one shared deadline.
+- Deterministic integration test holds a background task running while the same
+  conversation's chat job completes in the reserved pool, with separate sessions.
+- Limits: API quotas and filesystem access remain shared; no tool/file locking,
+  deadline-aware reminder lane, weighted delivery fairness, or OS sandbox added.
+- Verification: 264 tests and compileall pass. Scoped restart applied migration
+  3; SQLite quick_check passes. All legacy table counts and the three completed
+  interactive job states were preserved; real Telegram getMe succeeds.
+- No live concurrent model/Telegram conversation was generated for this change;
+  reserved-capacity behavior is verified by deterministic blocked-worker tests.
+
+## Unified background runtime (2026-10-31)
+- Added migration 2 for typed triggers, safe deferral timestamps, durable
+  initiative generations, and completed task-step checkpoints.
+- Atomic schedule acceptance replaces mark-before-thread execution. Task
+  linking is idempotent and does not prematurely claim work. Internal trigger
+  IDs never advance Telegram source cursors.
+- Extracted background producers/execution into openbridge/services. Removed
+  direct cron/task execution and memory-only initiative dispatch.
+- Background calls use independent job sessions, native permissions, usage
+  limits, terminal completion correlation, and the existing durable outbox.
+- Safe quota pauses create deferred runs and resume from completed steps;
+  interrupted/ambiguous calls remain fenced rather than automatically retried.
+- Task projections and runtime completion commit together. Step exhaustion no
+  longer falsely reports success without a DONE report.
+- Added /job alias, per-job progress/Stop, and non-final step retrieval. /tugas
+  now reports its durable job ID and honors configured step caps.
+- Corrected the host-local cron fallback and duplicate entries in one import.
+  Legacy once/interval timestamp interpretation remains unchanged.
+- Limits: per-conversation head-of-line blocking remains; permissions are not
+  OS isolation; WhatsApp, distributed workers, and voice remain unimplemented.
+- Real OpenCode background diagnostic passed with tools denied: one step
+  checkpointed, task done, output persisted. No Telegram diagnostic was sent;
+  the disposable session was cleaned up.
+- Verification: 253 tests and compileall pass. Scoped restart deployed migration
+  versions 1 and 2; SQLite quick_check passes. All seven legacy table counts and
+  both completed task statuses were preserved. Telegram getMyCommands confirms
+  that both /job and /jobs are registered.
+
+## Durable interactive runtime (2026-10-31)
+- Source and consistent SQLite backups saved privately before migration work.
+- Added transactional runtime inbox/cursors/jobs/runs/deliveries through a
+  versioned additive migration. No legacy tables or configuration are rewritten.
+- Telegram acceptance commits before advancing the cursor or acknowledging.
+  Unauthorized events do not create jobs or retain their message bodies.
+- Interactive output is captured, then job result and delivery intent commit
+  together. Final delivery edits the persisted status message where possible.
+- Queued jobs survive restarts. Running/ambiguous attempts become interrupted
+  and fence their conversation until explicit owner reconciliation, not replay.
+- /jobs, /result, and /resolve bypass blocked execution queues, with scoped
+  account/conversation checks. Reconciliation checks known backend activity/inbox.
+- OpenCode completion follows the accepted message ID through a terminal idle;
+  newest-first histories are sorted. Partial replies are not considered success.
+- Delivery retries do not execute the model. Ambiguous sends are quarantined;
+  known-message edits may retry; rate-limit retries honor retry_after.
+- Corrected Stop to use the native V2 interrupt route.
+- Real backend contract smoke passed using a disposable, tool-denied diagnostic
+  session; terminal text matched OPENBRIDGE_OK, then the session was cleaned up.
+- Limits: single-poller recovery, no distributed leases, no automatic execution
+  retry, no scheduler/task migration yet, no WhatsApp or voice transcription.
+- Verification: 230 discovered tests and compileall pass. A real Telegram
+  acknowledgement was edited into a persisted diagnostic result using an
+  isolated temporary database; delivery was confirmed sent, without model replay.
+- Deployed after a scoped stop/restart. Runtime migration version 1 applied;
+  SQLite quick_check passed and all seven legacy table row counts were unchanged.
+- First real incoming production job completed as succeeded; its saved result
+  delivery was confirmed sent on the first attempt after deployment.
+- Existing scheduler utcnow deprecation and legacy-test connection cleanup
+  warnings remain; they are not test failures.
+
+## Runtime foundation refactor (2026-10-30)
+- Architecture direction and incremental boundaries documented in ARCHITECTURE.md.
+- Added channel-neutral identities, integration ports, Telegram/OpenCode clients,
+  and bounded FIFO dispatch keyed by channel/account/conversation.
+- Direct turns, commands, ordinary callbacks, and initiative share conversation
+  serialization. Approval and Stop callbacks bypass it to avoid deadlocks.
+- Direct-message context is appended at execution time, preventing later queued
+  messages from entering an earlier prompt. Session caches and turn counters
+  now include account/channel identity, without renaming persisted sessions.
+- SSE state resets before prompt submission; failed submissions surface and
+  typing indicators stop on failure. Mutating HTTP calls are not auto-replayed.
+- Stale tests aligned with existing English API/status names and native V2
+  permissions. Legacy-import tests now use isolated state and a dummy service.
+- No production database schema or configuration migration in this stage.
+- Limits: conversation queue is in-memory; unified jobs/runs, durable inbox,
+  multi-channel storage, general session fencing, and recovery remain pending.
+- Voice transcription deferred. WhatsApp adapter not yet implemented.
+- Verification: all 203 discovered tests pass; compileall passes. Real read-only
+  OpenCode /api/info and Telegram getMe checks pass. Bridge restarted cleanly;
+  SSE connected and @Openuna_bot reported online at 23:39:08 in the local log.
+- Live post-refactor model replies have not been exercised by this verification.
+
+## V2 approval relay correction (2026-10-30)
+- Supersedes earlier claims about permission schemas: native V2 uses `permissions`
+  arrays with `shell` and `subagent`. The previous V1 `permission` rewrite was wrong.
+- Relay implemented in approval_relay.py with owner-only private-chat callbacks,
+  bot/session binding, once-only decisions, duplicate protection and five-minute
+  rejection while running. Failures never automatically approve requests.
+- Uses the running server's OpenAPI: GET /api/session/{id}/permission and
+  POST /api/session/{id}/permission/{requestID}/reply with `decision`.
+- Session create/reuse explicitly installs V2 permission rules; new sessions set
+  their location. Shell/edit require approval; subagents are disabled until
+  child-session approval routing is supported. Normal bot replies stay automatic.
+- 102 local unit tests pass. Real server request/list/reject contract smoke passed
+  without model calls or shell execution. Telegram button clicks remain untested.
+- Local commit a935f57; push blocked by missing configured GitHub credentials.
+- Existing backups may still contain secrets in config, memory, database or old
+  archives. File modes and tool permissions are not OS isolation.
+
 ## Fixed in first hardening pass
 - Telegram inputs and callbacks require explicit owner IDs (fail closed).
 - One real bot maps to its configured persona; no index-based remapping.
@@ -23,9 +268,9 @@
 ## Fixed in third pass (2026-10-30, Fase 3)
 - Random group replies removed; telegram group messages only trigger a direct reply when mentioned/replied.
 - Initiative loop: every `initiatif_detik` (default 300 s) the model reviews stale chats and either
-  speaks briefly or answers only "DIAM" (silent — never sent to Telegram).
+  speaks briefly or answers only "DIAM" (never sent to Telegram).
 - Task queue (`tasks` table) with step-capped autonomous cycle; crash recovery marks stale
-  "running" tasks failed with reason; `/tugas` command verifies end-to-end.
+  "jalan" tasks failed with reason; `/tugas` command verifies end-to-end.
 - Per-minute rate limiter (sliding 60 s window, per bot, persisted) guards every model call site.
 - Cron model calls now recorded into the usage meter (previously unaccounted).
 
@@ -34,7 +279,7 @@
 - personas.json is now a mirror/inbox: the bot edits the file, the bridge syncs to DB each loop;
   a corrupt/unreadable file cancels the sync instead of mass-deleting.
 - Persona deletion is appended to backup/personas.arsip.jsonl (no deletion without a trace).
-- One-shot reminders: "remind me (tomorrow) at X" creates kind=once schedules (expr in UTC,
+- One-shot reminders: "ingetin aku (besok) jam X" creates kind=once schedules (expr in UTC,
   displayed in WIB); kind=interval also served via due_schedules.
 
 ## Fixed in fifth pass (2026-10-30, Fase 0/5 prep)
@@ -44,6 +289,40 @@
   personas mirror, memories; verified end-to-end.
 - Provisioning flow is owner-gated by Telegram buttons (pv-y-/pv-n-); automatic spawn removed.
 - Persona deletion now archives the memory file to backup/memori/ before removal.
+
+## Fixed in sixth pass (2026-10-30, "feel like Grok" UX package)
+- Streaming Stop: ⏹ button on streamed messages; tries OpenCode `POST /session/:id/abort`,
+  falls back to bridge-side stop flag (endpoint 404 on OpenCode v2.2 → fallback is authoritative).
+- Clipped replies: nothing silently truncated at `max_char_reply` — ▶️ Lanjut chain (3500 char/chunk).
+- Task queue visibility: claim ack (🫡 budget N steps) + progress ping every 3rd step (⚙️ x/y).
+- `/new`: server-side compact + auto handoff summary (max 120 words) carried into the fresh session;
+  `/status` and `/reset` now keyed consistently by (persona, chat, mode).
+- Auto-compact: private chats compact after `compact_per_turns` (120) turns via `POST /session/:id/compact` (verified 200 on v2.2).
+- Media janitor: `media/` files older than 7 days removed in the daily backup sweep.
+- Telegram rich text: `parse_mode Markdown` + safe plain fallback on HTTP 400 "can't parse entities";
+  streaming final edit renders markdown, interim edits stay plain.
+- Deployed live (PID 29023) and pushed upstream: commit `3d57106`, CI success; 87 unit tests green.
+
+## Fixed in seventh pass (2026-10-30, external review triage)
+Reviewed at commit 9bf944d by an outside reviewer; findings resolved as follows:
+- `/reset` stale 2-tuple session key → confirmed real at 9bf944d:1300, already fixed in
+  `3d57106` (3-tuple `(nama, chat_id, mode)`); now locked by a regression test.
+- `/status`–`/reset` crash with `persona=None` → partially wrong: the `persona or {…}`
+  fallback predates the review (guard at 9bf944d:1244). Live-tested against the real bot;
+  regression test added.
+- Attachment download before owner check → confirmed real; **fixed**: authorization now
+  precedes `ambil_lampiran` (source-order regression test guards it).
+- opencode.jsonc `permissions` (plural, array) → confirmed real; OpenCode only reads the
+  singular `permission` OBJECT keyed by tool name, so every deny rule was dead. Config
+  rewritten to the real schema (read/edit/bash/external_directory with pattern maps).
+- Bot token + `pool.json` (spare tokens) inside daily backups → fixed: credential files
+  excluded from the archive; `*.token`/`pool.json`/`provision.json` chmod 600 at startup.
+- README claim "destructive actions require owner confirmation" overstated → reworded
+  (only provisioning has a confirmation button).
+- Known remaining (by design for now): agent shell is allow-by-default with deny rules only
+  (no bash `ask` relay yet — needs a Telegram Approve/Deny bridge before it works headless);
+  agent runs in the bridge user's environment (OS sandbox/separate user is Fase 4 work);
+  natural-language routine authoring still interests the model's own writing of cron.json.
 
 ## Not implemented / remaining risks
 - No VM, container, filesystem sandbox, per-bot OpenCode service or credentials.
@@ -60,9 +339,9 @@
 ## ✅ Resolved (was open)
 - ~~No per-minute rate limits~~ → rate_limiter.py (60 s window, per bot, persisted).
 - ~~Budget caps~~ → daily cap (80 calls/$2) + per-minute cap.
-- ~~Personas deleted without archive~~ → archived, .jsonl audit trail kept.
+- ~~Personas deleted without archive~~ → arsip .jsonl jejak.
 - ~~chats.json/personas.json remain JSON~~ → migrated (personas file kept as inbox mirror).
-- ~~One-shot schedules have no UI trigger~~ → "remind me (tomorrow) at X" in chat.
+- ~~One-shot schedules have no UI trigger~~ → "ingetin aku (besok) jam X" in chat.
 - Initiative behavior is untested against a real group (current tests: private chat only).
 - Bot tokens still plaintext in config.json; rotation pending owner action via BotFather.
 

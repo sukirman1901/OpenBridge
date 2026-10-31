@@ -28,8 +28,8 @@
   ],
   "commands": {
     "goal": {
-      "description": "Continue the autonomous agent plan",
-      "template": "Read GOAL.md at the root of this repository. Find the first phase with a not-done (⬜) status, work through that phase until its Done criteria are met, run its tests, refresh the checkbox statuses in GOAL.md, and report the results. Follow the Guardrails section. Do not skip phases."
+      "description": "Lanjutkan rencana agen otonom",
+      "template": "Baca /root/groupbot/GOAL.md. Cari fase dengan status belum selesai (⬜) paling atas, kerjakan fase itu hingga kriteria Done terpenuhi, jalankan tesnya, segarkan status checkbox di GOAL.md, dan laporkan hasilnya. Patuhi bagian Guardrails. Jangan lompat fase."
     }
   }
 }

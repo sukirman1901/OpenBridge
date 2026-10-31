@@ -7,14 +7,14 @@ from pathlib import Path
 root = Path(sys.argv[1])
 pidfile = root / 'bridge.pid'
 if not pidfile.exists():
-    raise SystemExit('No bridge PID recorded.')
+    raise SystemExit('Tidak ada PID bridge tercatat.')
 pid = int(pidfile.read_text())
 try:
     args = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
 except FileNotFoundError:
-    raise SystemExit('The bridge is already stopped.')
+    raise SystemExit('Bridge sudah berhenti.')
 if str(root / 'bridge.py').encode() not in args:
-    raise SystemExit('PID does not belong to this bridge; not stopping it.')
+    raise SystemExit('PID bukan bridge ini; tidak dihentikan.')
 os.kill(pid, signal.SIGTERM)
-print('Bridge stopped.')
+print('Bridge dihentikan.')
 PY
