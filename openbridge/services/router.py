@@ -13,9 +13,6 @@ class JobRouter:
         if bot is None:
             raise RuntimeError("Job account is no longer configured")
         if job["kind"] == "telegram_update":
-            if job["status_message_id"]:
-                self.call(bot["token"], "editMessageText", {"chat_id": job["conversation_id"],
-                    "message_id": job["status_message_id"], "text": "⚙️ Processing…"}, timeout=5)
             self.gateway.execute(bot, payload["update"], payload.get("username", ""))
             return
         if job["kind"] == "schedule":

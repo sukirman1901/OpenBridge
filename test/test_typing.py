@@ -1,5 +1,4 @@
 """Typing indicator: the bot shows 'typing…' while it works, best-effort."""
-import threading
 import unittest
 from unittest.mock import Mock
 
@@ -16,52 +15,36 @@ def make_gateway():
 
 
 class TypingLoop(unittest.TestCase):
+    def test_default_chat_has_no_extra_ack_roundtrip(self):
+        g = make_gateway()
+        g.config = {}
+        g.presence = Mock()
+        g.authorize.return_value = True
+        g.jobs.accept.return_value = (14, True)
+        g.accept({'token': '999:t'}, {'update_id': 1, 'message': {
+            'from': {'id': 2}, 'chat': {'id': 777, 'type': 'private'}, 'text': 'hi'}})
+        g.jobs.acknowledge.assert_called_once_with(14)
+        g.presence.acknowledge.assert_not_called()
+        g.call.assert_not_called()
+
     def setUp(self):
         self.gateway = make_gateway()
 
-    def test_typing_calls_send_chataction_until_released(self):
-        bot, chat_id = {"token": "tok"}, 777
-        calls = []
-        called = threading.Event()
-        def call(token, method, payload, timeout=45):
-            calls.append(method)
-            called.set()
-            return {}
-        self.gateway.call = call
-        done = threading.Event()
-        worker = threading.Thread(target=self.gateway.typing_action, args=(bot, chat_id, done))
-        worker.start()
-        self.assertTrue(called.wait(2))
-        done.set()
-        worker.join(timeout=10)
-        self.assertFalse(worker.is_alive())
-        self.assertTrue(calls)
-        self.assertEqual(calls[0], "sendChatAction")
-
-    def test_typing_survives_a_failing_channel_and_stops(self):
-        self.gateway.call = Mock(side_effect=RuntimeError("network"))
-        done = threading.Event()
-        worker = threading.Thread(target=self.gateway.typing_action,
-                                  args=({"token": "t"}, 1, done))
-        worker.start()
-        worker.join(timeout=5)
-        self.assertFalse(worker.is_alive())
-
-    def test_execute_shows_typing_while_answering(self):
+    def test_execute_requests_typing_without_waiting_for_network(self):
         g = make_gateway()
         bot = {"token": "t", "username": "Una", "bot_id": "999"}
         g.authorize = lambda user: True
         g.media.receive = Mock(return_value=("", ""))
         g.schedules.interpret = Mock(return_value=None)
         g.conversations.answer = Mock()
-        order = []
-        g.call = lambda token, method, payload=None, timeout=45: (order.append(method) or {})
-        g.conversations.answer = lambda bot, chat_id, sender, text, kind: order.append("answer")
+        g.presence = Mock()
+        g.runtime.current_job.return_value = {'id': 1}
         g.execute(bot, {"message": {"message_id": 1, "from": {"id": 2, "first_name": "O"},
                     "chat": {"id": 777, "type": "private"}, "text": "hi"},
                     "update_id": 9}, "Una")
-        self.assertIn("sendChatAction", order)
-        self.assertLess(order.index("sendChatAction"), order.index("answer"))
+        g.presence.typing.assert_called_once_with(1)
+        g.conversations.answer.assert_called_once()
+        g.call.assert_not_called()
 
     def test_acknowledgement_has_no_internal_job_number(self):
         g = make_gateway()
@@ -97,6 +80,18 @@ class TypingLoop(unittest.TestCase):
             "message_id": 3, "from": {"id": 2}, "chat": {"id": 777, "type": "group"},
             "text": "talking to someone else"}}, "Una")
         g.call.assert_not_called()
+
+    def test_cancel_button_is_a_control_even_when_chat_is_fenced(self):
+        g = make_gateway()
+        g.authorize.return_value = True
+        g.jobs.accept.return_value = (None, True)
+        # Suppress the cosmetic thread; the important fence is enqueue=False.
+        from unittest.mock import patch
+        with patch('openbridge.adapters.channels.telegram.gateway.threading.Thread'):
+            g.accept({'token': '123:t'}, {'update_id': 1, 'callback_query': {
+                'from': {'id': 42}, 'data': 'jx-99',
+                'message': {'chat': {'id': 42, 'type': 'private'}}}})
+        self.assertFalse(g.jobs.accept.call_args.kwargs['enqueue'])
 
 
 if __name__ == "__main__":

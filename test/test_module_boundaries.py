@@ -140,9 +140,14 @@ class TestDeliveryAdapter(unittest.TestCase):
         self.assertEqual(adapter.deliver(self.delivery("delete"))[0], "dead")
         call.assert_not_called()
 
-    def test_direct_failure_uses_legacy_outbox_without_model_work(self):
+    def test_ambiguous_direct_failure_is_not_replayed_in_legacy_outbox(self):
         adapter, _ = self.adapter({"error": 503})
         adapter.send_text("123", 42, "answer")
+        adapter.enqueue_legacy.assert_not_called()
+
+    def test_known_rejected_direct_send_can_use_legacy_outbox(self):
+        adapter, _ = self.adapter({'error': 429})
+        adapter.send_text('123', 42, 'answer')
         adapter.enqueue_legacy.assert_called_once_with("123:test", 42, "answer")
 
     def test_ambiguous_parse_text_does_not_trigger_a_duplicate_send(self):

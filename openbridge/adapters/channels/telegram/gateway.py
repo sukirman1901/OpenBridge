@@ -10,10 +10,11 @@ from openbridge.services.conversations import conversation_key
 
 class TelegramGateway:
     def __init__(self, *, config, call, jobs, store, runtime, context, conversations, commands,
-                 media, schedules, authorize, send, controls, stopped, log):
+                 media, schedules, authorize, send, controls, stopped, log, presence=None):
         self.config, self.call, self.jobs, self.store, self.runtime = config, call, jobs, store, runtime
         self.context, self.conversations, self.commands, self.media, self.schedules = context, conversations, commands, media, schedules
         self.authorize, self.send, self.controls, self.stopped, self.log = authorize, send, controls, stopped, log
+        self.presence = presence
 
     def poll(self, bot, index=0):
         return TelegramPoller(self.call, self.jobs, self.store, self.accept, self.stopped, self.log).run(bot)
@@ -31,7 +32,7 @@ class TelegramGateway:
         permitted = bool(chat.get("id")) and self.authorize(sender)
         text = (message.get("text") or "").strip()
         command = text.split(maxsplit=1)[0].split("@")[0] if text else ""
-        control = bool(callback and callback.get("data", "").startswith(("ap-y-", "ap-n-", "st-")))
+        control = bool(callback and callback.get("data", "").startswith(("ap-y-", "ap-n-", "st-", "jx-")))
         management = not callback and chat.get("type") == "private" and command in ("/job", "/jobs", "/resolve", "/result", "/cancel")
         job_id, created = self.jobs.accept(conversation_key(bot, chat.get("id", "ignored")), update["update_id"],
             {"update": update, "username": bot.get("username", "")} if permitted else {}, enqueue=permitted and not (control or management))
@@ -43,29 +44,31 @@ class TelegramGateway:
         if control:
             threading.Thread(target=self.commands.callback, args=(bot, callback), daemon=True).start()
             return
-        acknowledgement = None
-        try:
-            if not callback and self.addressed(message, bot.get("username"), text):
-                blocked = self.jobs.is_blocked(conversation_key(bot, chat["id"]))
-                notice = ("⏸ Queue paused: an earlier request was interrupted. "
-                          "Your message is saved, but is not running. Use /jobs to review."
-                          if blocked else "⏳ Queued…")
+        if not callback and self.addressed(message, bot.get('username'), text):
+            blocked = self.jobs.is_blocked(conversation_key(bot, chat['id']))
+            wants_ack = (self.config.get('telegram') or {}).get('acknowledge') is True
+            if self.presence and not blocked and not wants_ack:
+                self.jobs.acknowledge(job_id)
+                self.log('Persisted Telegram job', job_id)
+                return
+            notice = ("⏸ Queue paused: an earlier request was interrupted. "
+                      "Your message is saved, but is not running. Use /jobs to review."
+                      if blocked else "⏳ Queued…")
+            if self.presence:
+                self.presence.acknowledge(job_id, bot, chat['id'], notice,
+                                          lambda mid: self.jobs.acknowledge(job_id, mid))
+                self.log('Persisted Telegram job', job_id)
+                return
+            acknowledgement = None
+            try:
                 result = self.call(bot["token"], "sendMessage", {"chat_id": chat["id"],
                     "text": notice}, timeout=8)
                 acknowledgement = (result.get("result") or {}).get("message_id") if result.get("ok") else None
-        finally:
-            self.jobs.acknowledge(job_id, acknowledgement)
+            finally:
+                self.jobs.acknowledge(job_id, acknowledgement)
+        else:
+            self.jobs.acknowledge(job_id)
         self.log("Persisted Telegram job", job_id)
-
-    def typing_action(self, bot, chat_id, done):
-        """Best-effort typing indicator while the agent works; stops on reply."""
-        while not done.is_set():
-            try:
-                self.call(bot["token"], "sendChatAction",
-                          {"chat_id": chat_id, "action": "typing"}, timeout=5)
-            except Exception:
-                return  # typing is cosmetic; never let it break the job
-            done.wait(4)
 
     def execute(self, bot, update, username):
         callback = update.get("callback_query")
@@ -89,6 +92,10 @@ class TelegramGateway:
         self.store.save_chat(chat_id, chat.get("title") or f"DM-{sender}")
         addressed = self.addressed(message, username, text)
         self.context.append(chat_id, "user", text, name=sender)
+        if addressed and self.presence:
+            job = self.runtime.current_job()
+            if job:
+                self.presence.typing(job['id'])
         if text.startswith("/") and addressed:
             parts = text.split(maxsplit=1)
             self.commands.handle(bot, chat_id, parts[0].lstrip("/").split("@")[0], parts[1] if len(parts) > 1 else "")
@@ -99,18 +106,8 @@ class TelegramGateway:
                 self.jobs.note_initiative(conversation_key(bot, chat_id), job["id"],
                     self.context.format_context(chat_id, self.config.get("trigger", {}).get("konteks_n", 15)))
             return
-        typing_done = threading.Event()
-        # Establish presence before answering, not at the mercy of thread scheduling.
-        try:
-            self.call(bot["token"], "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=5)
-        except Exception:
-            pass
-        threading.Thread(target=self.typing_action, args=(bot, chat_id, typing_done), daemon=True).start()
-        try:
-            scheduled = self.schedules.interpret(bot_id(bot), chat_id, text, addressed)
-            if scheduled:
-                self.send(bot, chat_id, scheduled)
-                return
-            self.conversations.answer(bot, chat_id, sender, text, chat.get("type"))
-        finally:
-            typing_done.set()
+        scheduled = self.schedules.interpret(bot_id(bot), chat_id, text, addressed)
+        if scheduled:
+            self.send(bot, chat_id, scheduled)
+            return
+        self.conversations.answer(bot, chat_id, sender, text, chat.get('type'))

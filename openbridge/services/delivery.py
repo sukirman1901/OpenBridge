@@ -20,7 +20,7 @@ class OutputService:
             for index, chunk in enumerate(chunks):
                 self.runtime.emit({"operation": "send", "text": chunk,
                     "buttons": buttons if index == len(chunks) - 1 else None,
-                    "cols": columns, "parse": not bool(buttons)})
+                    "cols": columns, "parse": False})
             return
         return self.channel.send_text(account_id, conversation_id, text, buttons, columns)
 

@@ -3,7 +3,8 @@ from openbridge.ports.execution import ExecutionBackend
 
 
 class ConversationSessions:
-    def __init__(self, cache, lock, open_session, prompt, register, checkpoint, log):
+    def __init__(self, cache, lock, open_session, prompt, register, checkpoint, log,
+                 prepared=None, mark_prepared=None):
         self.cache = cache
         self.lock = lock
         self.open_session = open_session
@@ -11,6 +12,7 @@ class ConversationSessions:
         self.register = register
         self.checkpoint = checkpoint
         self.log = log
+        self.prepared, self.mark_prepared = prepared, mark_prepared
 
     def _attach(self, sid):
         self.register(sid)
@@ -24,10 +26,14 @@ class ConversationSessions:
             if key in self.cache:
                 return self._attach(self.cache[key])
             sid = self.open_session(title)
-            self.cache[key] = sid
             self._attach(sid)  # Persist/register before any model call.
-            acknowledgement = self.prompt(sid, briefing(), 90)
-            self.log("Conversation session prepared", sid, "briefing_ready", bool(acknowledgement))
+            text = briefing()
+            if not self.prepared or not self.prepared(sid, text):
+                acknowledgement = self.prompt(sid, text, 90)
+                if self.mark_prepared:
+                    self.mark_prepared(sid, text)
+                self.log("Conversation session prepared", sid, "briefing_ready", bool(acknowledgement))
+            self.cache[key] = sid
             return sid
 
 

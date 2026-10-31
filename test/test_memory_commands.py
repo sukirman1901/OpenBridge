@@ -13,14 +13,18 @@ KEY = dict(config=Mock(), backend=Mock(), conversations=Mock(), personas=Mock(),
            provision=Mock(), authorize=lambda user: True, edit=Mock(), call=Mock(), log=Mock())
 
 
-def make_commands():
-    return TelegramCommands(store=Store(str(Path(tempfile.mkdtemp()) / "mem.db")),
+def make_commands(test):
+    temporary = tempfile.TemporaryDirectory()
+    test.addCleanup(temporary.cleanup)
+    store = Store(str(Path(temporary.name) / 'mem.db'))
+    test.addCleanup(store.close)
+    return TelegramCommands(store=store,
                             send=Mock(), **KEY)
 
 
 class MemoryCommands(unittest.TestCase):
     def setUp(self):
-        self.commands = make_commands()
+        self.commands = make_commands(self)
         self.send = self.commands.send
 
     def test_remember_stores_a_chat_fact(self):

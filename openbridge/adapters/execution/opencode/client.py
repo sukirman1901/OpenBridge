@@ -1,6 +1,7 @@
 """OpenCode V2 session API adapter. It does not own conversation scheduling."""
 import json
 import time
+import threading
 from urllib.parse import quote
 
 from openbridge.ports.transport import JsonTransport
@@ -19,6 +20,13 @@ class OpenCodeClient:
         self.auth = auth
         self.transport = transport
         self.events = events
+        self._local = threading.local()
+
+    def last_usage(self, session_id):
+        """Receipt-local usage already read with the answer, without another GET."""
+        if getattr(self._local, 'session_id', None) != session_id:
+            return {}
+        return dict(getattr(self._local, 'usage', {}))
 
     def request(self, path, method="GET", body=None, timeout=45):
         if not path.startswith("/api/"):
@@ -158,9 +166,22 @@ class OpenCodeClient:
                 return None
             answers = [' '.join(p.get('text', '') for p in m.get('content', []) if p.get('type') == 'text').strip()
                        for m in fresh[:terminal] if m.get('type') == 'assistant' and m.get('finish') != 'tool-calls']
+            assistants = [m for m in fresh[:terminal] if m.get('type') == 'assistant']
+            cost, tokens = 0, 0
+            for message in assistants:
+                value = message.get('cost', 0)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    cost += value
+                counts = message.get('tokens') or {}
+                if isinstance(counts, dict):
+                    values = [counts.get(k, 0) for k in ('input', 'output', 'reasoning')]
+                    cache = counts.get('cache')
+                    if isinstance(cache, dict):
+                        values.extend(cache.get(k, 0) for k in ('read', 'write'))
+                    tokens += sum(v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool))
             return {'outcome': 'succeeded' if outcome == 'succeeded' else 'failed',
                     'answer': '\n\n'.join(t for t in answers if t), 'error': fresh[terminal].get('error'),
-                    'tools_used': tools_used}
+                    'tools_used': tools_used, 'usage': {'cost': cost, 'tokens': tokens}}
         if fresh and fresh[-1].get('type') == 'assistant' and fresh[-1].get('finish') == 'error':
             return {'outcome': 'failed', 'answer': '', 'error': fresh[-1].get('error'),
                     'requires_idle': True, 'tools_used': tools_used}
@@ -168,6 +189,7 @@ class OpenCodeClient:
 
     def run_prompt(self, session_id, text, timeout=120, clock=time.monotonic, wait=time.sleep,
                    on_accepted=None, on_state=None, approval_timeout=300):
+        self._local.session_id, self._local.usage = session_id, {}
         if self.events:
             self.events.watch(session_id)
         try:
@@ -234,6 +256,7 @@ class OpenCodeClient:
                 # session drain is released. Do not race the next operation.
                 result = None
             if result:
+                self._local.usage = result.get('usage') or {}
                 if result.get('requires_idle') and not self.session_idle(session_id):
                     raise ExecutionUncertain('OpenCode failed but backend state needs review')
                 if result['outcome'] != 'succeeded':

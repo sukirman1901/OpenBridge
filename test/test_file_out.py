@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 from openbridge.services.background import parse_file_outputs
 from openbridge.services.delivery import OutputService
-from openbridge.adapters.channels.telegram.uploads import multipart
+from openbridge.adapters.channels.telegram.uploads import multipart, read_artifact
 from openbridge.adapters.channels.telegram.delivery import TelegramDelivery
 
 
@@ -47,6 +47,13 @@ class OutboundPathSafety(unittest.TestCase):
         self.assertIsNone(outbound_path(self.home, "/etc/passwd"))
         self.assertIsNone(outbound_path(self.home, "hasil/gone.pdf"))
 
+    def test_credentials_inside_bridge_home_are_not_deliverables(self):
+        from openbridge.adapters.channels.telegram.delivery import outbound_path
+        (self.home / 'private.token').write_text('not-a-real-token')
+        self.assertIsNone(outbound_path(self.home, 'private.token'))
+        (self.home / 'hasil' / 'alias.txt').symlink_to(self.home / 'private.token')
+        self.assertIsNone(outbound_path(self.home, 'hasil/alias.txt'))
+
     def test_document_delivery_uploads_the_file(self):
         delivery = {"job_id": 1, "id": 1, "account_id": "999", "conversation_id": "777",
                     "payload": {"operation": "document", "path": "hasil/report.pdf",
@@ -76,6 +83,25 @@ class OutboundPathSafety(unittest.TestCase):
 
 
 class MultipartEncoding(unittest.TestCase):
+    def test_bounded_reader_refuses_symlinks_and_oversize_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'data.txt'
+            path.write_bytes(b'12345')
+            self.assertEqual(read_artifact(path, 5), b'12345')
+            with self.assertRaises(ValueError):
+                read_artifact(path, 4)
+            alias = root / 'alias.txt'
+            alias.symlink_to(path)
+            with self.assertRaises(OSError):
+                read_artifact(alias, 10)
+
+    def test_boundary_is_unpredictable_and_filename_cannot_inject_headers(self):
+        first, body = multipart({'chat_id': '777'}, 'document', 'bad"\r\nX-Fake: yes.txt', b'data')
+        second, _ = multipart({'chat_id': '777'}, 'document', 'ok.txt', b'data')
+        self.assertNotEqual(first, second)
+        self.assertNotIn(b'\r\nX-Fake:', body)
+
     def test_fields_and_file_chunks(self):
         content_type, body = multipart({"chat_id": "777", "caption": "hi"}, "document",
                                        "report.pdf", b"%PDF-1.4")

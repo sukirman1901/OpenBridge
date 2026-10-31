@@ -4,6 +4,7 @@ All acceptance changes share one SQLite transaction. No legacy table or
 credential is copied. Only the owning, single-poller bridge may run recovery.
 """
 import json
+import hashlib
 import sqlite3
 import threading
 import time
@@ -89,6 +90,13 @@ CREATE TABLE runtime_prompts (
 CREATE INDEX runtime_prompts_job ON runtime_prompts(job_id,id);
 """
 
+MIGRATION_5 = """
+CREATE TABLE runtime_sessions (
+    session_id TEXT PRIMARY KEY, briefing_hash TEXT NOT NULL, prepared_at REAL NOT NULL
+);
+ALTER TABLE runtime_deliveries ADD COLUMN media INTEGER NOT NULL DEFAULT 0 CHECK(media IN (0,1));
+"""
+
 
 class JobStore:
     def __init__(self, path=":memory:", clock=time.time):
@@ -100,11 +108,11 @@ class JobStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA synchronous=FULL")
-        with self.transaction():
+        with self._initialization():
             self.db.execute("CREATE TABLE IF NOT EXISTS runtime_migrations "
                             "(version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
             versions = [r[0] for r in self.db.execute("SELECT version FROM runtime_migrations")]
-            if any(version > 4 for version in versions):
+            if any(version > 5 for version in versions):
                 raise RuntimeError("Runtime database requires a newer OpenBridge")
             if 1 not in versions:
                 for statement in MIGRATION_1.split(";"):
@@ -126,6 +134,23 @@ class JobStore:
                     if statement.strip():
                         self.db.execute(statement)
                 self.db.execute("INSERT INTO runtime_migrations VALUES(4, ?)", (clock(),))
+            if 5 not in versions:
+                for statement in MIGRATION_5.split(';'):
+                    if statement.strip():
+                        self.db.execute(statement)
+                for row in self.db.execute('SELECT id,payload FROM runtime_deliveries').fetchall():
+                    if json.loads(row['payload']).get('operation') in ('document', 'photo'):
+                        self.db.execute('UPDATE runtime_deliveries SET media=1 WHERE id=?', (row['id'],))
+                self.db.execute('INSERT INTO runtime_migrations VALUES(5, ?)', (clock(),))
+
+    @contextmanager
+    def _initialization(self):
+        try:
+            with self.transaction():
+                yield
+        except BaseException:
+            self.db.close()
+            raise
 
     @contextmanager
     def transaction(self):
@@ -142,6 +167,17 @@ class JobStore:
     def close(self):
         with self.lock:
             self.db.close()
+
+    def session_prepared(self, sid, briefing):
+        digest = hashlib.sha256(briefing.encode()).hexdigest()
+        with self.lock:
+            return self.db.execute('SELECT 1 FROM runtime_sessions WHERE session_id=? AND briefing_hash=?',
+                                   (sid, digest)).fetchone() is not None
+
+    def prepare_session(self, sid, briefing):
+        digest = hashlib.sha256(briefing.encode()).hexdigest()
+        with self.transaction():
+            self.db.execute('INSERT OR REPLACE INTO runtime_sessions VALUES(?,?,?)', (sid, digest, self.clock()))
 
     def begin_prompt(self, job_id, session_id, purpose, step=None):
         """Persist submission intent before POST; a missing receipt stays ambiguous."""
@@ -172,13 +208,13 @@ class JobStore:
             self.db.execute('UPDATE runtime_prompts SET stage=?,updated_at=? WHERE id=?',
                             (stage, self.clock(), prompt_id))
 
-    def interrupted_prompts(self, limit=32):
+    def interrupted_prompts(self, limit=32, after=0):
         with self.lock:
             return [dict(row) for row in self.db.execute(
                 "SELECT p.*,j.kind,j.channel,j.account_id,j.conversation_id,j.inbox_id "
                 "FROM runtime_prompts p JOIN runtime_jobs j ON j.id=p.job_id "
                 "WHERE j.status='interrupted' AND p.id=(SELECT MAX(q.id) FROM runtime_prompts q WHERE q.job_id=j.id) "
-                "AND p.message_id IS NOT NULL ORDER BY p.updated_at,p.id LIMIT ?", (limit,))]
+                "AND p.message_id IS NOT NULL AND p.id>? ORDER BY p.id LIMIT ?", (after, limit))]
 
     def task_time(self):
         return datetime.fromtimestamp(self.clock(), timezone(timedelta(hours=7))).strftime("%Y-%m-%d %H:%M:%S")
@@ -442,9 +478,9 @@ class JobStore:
                     output.update(operation="edit", message_id=job["status_message_id"])
                 self.db.execute(
                     "INSERT INTO runtime_deliveries(job_id,sequence,channel,account_id,conversation_id,payload,"
-                    "status,next_try,created_at) VALUES(?,?,?,?,?,?,'pending',?,?)",
+                    "status,next_try,created_at,media) VALUES(?,?,?,?,?,?,'pending',?,?,?)",
                     (job_id, index, job["channel"], job["account_id"], job["conversation_id"],
-                     json.dumps(output, ensure_ascii=False), now, now))
+                     json.dumps(output, ensure_ascii=False), now, now, int(output['operation'] in ('document', 'photo'))))
         return True
 
     def _project_task(self, job, status, outputs, error):
@@ -529,9 +565,9 @@ class JobStore:
                 if index == 0 and output['operation'] == 'send' and job['status_message_id']:
                     output.update(operation='edit', message_id=job['status_message_id'])
                 self.db.execute("INSERT INTO runtime_deliveries(job_id,sequence,channel,account_id,conversation_id,"
-                                "payload,status,next_try,created_at) VALUES(?,?,?,?,?,?,'pending',?,?)",
+                                "payload,status,next_try,created_at,media) VALUES(?,?,?,?,?,?,'pending',?,?,?)",
                                 (job_id, sequence + index, job['channel'], job['account_id'], job['conversation_id'],
-                                 json.dumps(output, ensure_ascii=False), now, now))
+                                 json.dumps(output, ensure_ascii=False), now, now, int(output['operation'] in ('document', 'photo'))))
             return True
 
     def resolve(self, job_id):
@@ -579,15 +615,19 @@ class JobStore:
                 pruned.append(job_id)
         return pruned
 
-    def claim_delivery(self):
+    def claim_delivery(self, media=None):
+        if media is not None and media not in (0, 1):
+            raise ValueError('Invalid delivery media class')
         with self.transaction():
             row = self.db.execute(
                 "SELECT d.* FROM runtime_deliveries d JOIN runtime_jobs j ON j.id=d.job_id "
                 "WHERE d.status='pending' AND d.next_try<=? "
+                + ('AND d.media=? ' if media is not None else '') +
                 "AND NOT EXISTS(SELECT 1 FROM runtime_deliveries p WHERE p.job_id=d.job_id "
                 "AND p.sequence<d.sequence AND p.status!='sent') "
                 "ORDER BY CASE j.lane WHEN 'interactive' THEN 0 ELSE 1 END, "
-                "CASE j.kind WHEN 'schedule' THEN 0 ELSE 1 END, d.id LIMIT 1", (self.clock(),)).fetchone()
+                "CASE j.kind WHEN 'schedule' THEN 0 ELSE 1 END, d.id LIMIT 1",
+                (self.clock(), media) if media is not None else (self.clock(),)).fetchone()
             if not row:
                 return None
             self.db.execute("UPDATE runtime_deliveries SET status='sending',attempts=attempts+1 WHERE id=?", (row["id"],))

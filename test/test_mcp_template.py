@@ -8,8 +8,8 @@ TEMPLATE = Path(__file__).resolve().parent.parent / "deploy" / "mcp.example.json
 
 
 def strip_comments(text):
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return re.sub(r"//[^\n]*", "", text)
+    return re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/',
+                  lambda match: match.group(1) or '', text, flags=re.S)
 
 
 class McpTemplate(unittest.TestCase):
@@ -18,12 +18,13 @@ class McpTemplate(unittest.TestCase):
 
     def test_three_connectors_present(self):
         for name in ("gmail", "gdrive", "github"):
-            self.assertIn(name, self.config["mcp"])
+            self.assertIn(name, self.config["mcp"]["servers"])
 
-    def test_each_server_declares_type_and_enabled(self):
-        for name, server in self.config["mcp"].items():
+    def test_each_server_declares_type_and_is_disabled_in_native_v2_shape(self):
+        for name, server in self.config["mcp"]["servers"].items():
             self.assertIn(server["type"], ("local", "remote"), name)
-            self.assertIn("enabled", server, name)
+            self.assertTrue(server['disabled'], name)
+            self.assertNotIn('enabled', server)
 
     def test_no_live_credentials_in_the_template(self):
         raw = TEMPLATE.read_text()
@@ -31,7 +32,7 @@ class McpTemplate(unittest.TestCase):
         self.assertNotRegex(raw, r"github_pat_[A-Za-z0-9_]{20,}")
 
     def test_github_uses_the_documented_env_variable(self):
-        github = json.dumps(self.config["mcp"]["github"])
+        github = json.dumps(self.config["mcp"]["servers"]["github"])
         self.assertIn("GITHUB_PERSONAL_ACCESS_TOKEN", github)
 
 

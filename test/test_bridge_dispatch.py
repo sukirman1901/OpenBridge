@@ -9,7 +9,7 @@ from openbridge.domain.errors import ExecutionUncertain
 
 
 class TestBridgeDispatch(unittest.TestCase):
-    def test_checkpoint_progress_does_not_expose_job_numbers(self):
+    def test_checkpoint_does_not_make_synchronous_cosmetic_calls(self):
         call = Mock(return_value={"ok": True, "result": {"message_id": 231}})
         app = make_application(self, call=call)
         parts = app.components
@@ -22,9 +22,8 @@ class TestBridgeDispatch(unittest.TestCase):
         parts.runtime.run(1)
         notices = [c.args[2]["text"] for c in call.call_args_list
                    if len(c.args) > 2 and c.args[1] == "editMessageText"]
-        self.assertTrue(notices)
-        for text in notices:
-            self.assertEqual(text, "⚙️ Processing…")
+        self.assertEqual(notices, [])
+        parts.backend.run_prompt.assert_called_once()
 
     def test_polled_messages_are_sequential_and_keep_their_own_context(self):
         updates = [{"update_id": index, "message": {"message_id": index, "chat": {"id": 42, "type": "private"},

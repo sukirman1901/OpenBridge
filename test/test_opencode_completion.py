@@ -6,6 +6,16 @@ from openbridge.domain.errors import ExecutionUncertain, RetryLater
 
 
 class TestOpenCodeCompletion(unittest.TestCase):
+    def test_usage_is_for_this_receipt_not_cumulative_session_cost(self):
+        history = self.messages()
+        history['data'][1].update(cost=.2, tokens={'input': 3, 'output': 2})
+        history['data'][-1].update(cost=99, tokens={'input': 9000})
+        client = self.client([history])
+        client.run_prompt('session', 'hello')
+        self.assertEqual(client.last_usage('session'), {'cost': .2, 'tokens': 5})
+        self.assertEqual(client.last_usage('other-session'), {})
+        self.assertEqual(client.transport.call_count, 3)
+
     def test_tracked_terminal_result_waits_for_session_drain_release(self):
         client = self.client([{'data': []}])
         client.messages = Mock(return_value=self.messages()['data'])

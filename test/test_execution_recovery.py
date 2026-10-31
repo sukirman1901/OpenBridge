@@ -11,6 +11,22 @@ from openbridge.services.reconciliation import ExecutionReconciler
 
 
 class ExecutionRecovery(unittest.TestCase):
+    def test_active_old_receipts_do_not_starve_later_completed_jobs(self):
+        self.receipt()
+        self.interrupt()
+        for identity in range(2, 36):
+            job, _ = self.store.accept(ConversationKey('telegram', '123', str(identity)), identity, {})
+            self.store.acknowledge(job)
+            self.store.claim(job)
+            receipt = self.store.begin_prompt(job, f'sid-{identity}', 'reply')
+            self.store.accept_prompt(receipt, f'user-{identity}')
+            self.store.finish(job, [], status='interrupted')
+        self.backend.session_idle.side_effect = lambda sid: sid == 'sid-35'
+        reconciler = ExecutionReconciler(self.store, self.backend, Mock())
+        reconciler.tick()
+        reconciler.tick()
+        self.assertEqual(self.store.get(35)['status'], 'succeeded')
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

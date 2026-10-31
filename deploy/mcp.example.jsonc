@@ -1,43 +1,39 @@
 {
-  // OpenBridge MCP connector template (batch 6).
+  "$schema": "https://opencode.ai/config.json",
+  // Native V2: merge selected entries under mcp.servers, NOT directly under mcp.
+  // These are opt-in examples, not connected integrations. No packages or OAuth
+  // flows are installed/run by OpenBridge. Verify upstream maintenance/version
+  // and least-privilege scopes before enabling a connector.
   //
-  // HOW TO MERGE: copy the entries you want under the top-level "mcp" key of
-  // your bridge opencode.jsonc (the file next to config.json). Keep secrets in
-  // environment variables loaded from private files — never write real tokens
-  // into opencode.jsonc or this template. Restart the bridge after merging so
-  // new agent sessions pick the servers up.
-  //
-  // Per-server setup notes:
-  //  * gmail    — needs an OAuth2 refresh token (drive/gmail scope). Generate
-  //               it once with the official Google flow and place the JSON in
-  //               ~/.local/state/opencode/gmail.oauth.json, then reference it
-  //               through the environment indirection below.
-  //  * gdrive   — uses the same Google OAuth2 setup as gmail.
-  //  * github   — create a fine-grained personal access token with the repo
-  //               scopes you allow the agent, and store it in a 0600 file.
+  // Gmail: complete the upstream server's OAuth setup; its default private
+  // credential files live under ~/.gmail-mcp/. Do not put refresh tokens here.
+  // Drive: GDRIVE_CREDENTIALS_PATH is a FILE PATH to the upstream credential
+  // JSON, not the JSON contents. Keep that file mode 0600 outside the repo.
+  // GitHub: install the official github-mcp-server binary separately and supply
+  // its token through the service environment, never through committed config.
+  // OpenCode watches config changes; check connectivity with opencode mcp list.
   "mcp": {
-    "gmail": {
-      "type": "local",
-      "command": ["npx", "-y", "@gongrzhe/server-gmail-autoauth-mcp"],
-      "enabled": false,
-      "environment": {
-        "GMAIL_OAUTH_JSON": "{file:~/.local/state/opencode/gmail.oauth.json}"
-      }
-    },
-    "gdrive": {
-      "type": "local",
-      "command": ["npx", "-y", "@modelcontextprotocol/server-gdrive"],
-      "enabled": false,
-      "environment": {
-        "GOOGLE_APPLICATION_CREDENTIALS": "{file:~/.local/state/opencode/google.oauth.json}"
-      }
-    },
-    "github": {
-      "type": "local",
-      "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
-      "enabled": false,
-      "environment": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "{file:~/.local/state/opencode/github.token}"
+    "servers": {
+      "gmail": {
+        "type": "local",
+        "command": ["npx", "-y", "@gongrzhe/server-gmail-autoauth-mcp"],
+        "disabled": true
+      },
+      "gdrive": {
+        "type": "local",
+        "command": ["npx", "-y", "@modelcontextprotocol/server-gdrive"],
+        "disabled": true,
+        "environment": {
+          "GDRIVE_CREDENTIALS_PATH": "{env:GDRIVE_CREDENTIALS_PATH}"
+        }
+      },
+      "github": {
+        "type": "local",
+        "command": ["github-mcp-server", "stdio"],
+        "disabled": true,
+        "environment": {
+          "GITHUB_PERSONAL_ACCESS_TOKEN": "{env:GITHUB_PERSONAL_ACCESS_TOKEN}"
+        }
       }
     }
   }

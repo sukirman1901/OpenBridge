@@ -1,4 +1,5 @@
 """Polling uses injected acceptance/storage boundaries, not bridge globals."""
+from openbridge.adapters.channels.telegram.limits import retry_after
 
 COMMANDS = [
     {"command": command, "description": description} for command, description in (
@@ -24,9 +25,18 @@ class TelegramPoller:
         self.poll_seconds = poll_seconds
 
     def run(self, bot):
-        identity = self.call(bot["token"], "getMe")
-        if not identity.get("ok"):
+        delay = 1
+        while not self.stopped.is_set():
+            identity = self.call(bot['token'], 'getMe')
+            if identity.get('ok'):
+                break
             self.log("Telegram identity check failed for", bot["nama"])
+            code = identity.get('error_code') or identity.get('error')
+            if code in (401, 404):
+                return
+            self.stopped.wait(retry_after(identity) if code == 429 else delay)
+            delay = min(30, delay * 2)
+        else:
             return
         bot["bot_id"] = str(identity["result"]["id"])
         bot["username"] = identity["result"].get("username")
@@ -34,14 +44,21 @@ class TelegramPoller:
         account_id = bot["bot_id"]
         offset = self.jobs.cursor("telegram", account_id, self.legacy_store.get_offset(account_id))
         self.log("Telegram bot online:", bot["nama"], "offset", offset)
+        backoff = 1
         while not self.stopped.is_set():
             response = self.call(bot["token"], "getUpdates", {"offset": offset, "timeout": self.poll_seconds},
                                  timeout=self.poll_seconds + 10)
-            updates = response.get("result") or [] if response.get("ok") else []
+            if not response.get('ok'):
+                code = response.get('error_code') or response.get('error')
+                self.stopped.wait(retry_after(response) if code == 429 else backoff)
+                backoff = min(30, backoff * 2)
+                continue
+            backoff = 1
+            updates = response.get('result') or []
             for update in updates:
                 if self.stopped.is_set():
                     return  # Unaccepted updates remain at the source cursor.
                 self.accept(bot, update)
                 offset = self.jobs.cursor("telegram", account_id)
                 self.legacy_store.set_offset(account_id, offset)
-            self.stopped.wait(.5)
+            self.stopped.wait(.05 if updates else .5)

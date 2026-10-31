@@ -11,13 +11,17 @@ from openbridge.services.job_commands import JobCommands
 KEY = ConversationKey("telegram", "999", "777")
 
 
-def make_store():
-    return JobStore(str(Path(tempfile.mkdtemp()) / "jobs.db"))
+def make_store(test):
+    temporary = tempfile.TemporaryDirectory()
+    test.addCleanup(temporary.cleanup)
+    store = JobStore(str(Path(temporary.name) / 'jobs.db'))
+    test.addCleanup(store.close)
+    return store
 
 
 class StoreCancellation(unittest.TestCase):
     def setUp(self):
-        self.store = make_store()
+        self.store = make_store(self)
         self.job_id, _ = self.store.accept(KEY, 100, {"text": "hi"})
 
     def test_cancel_moves_queued_job_to_cancelled(self):
@@ -45,7 +49,7 @@ class StoreCancellation(unittest.TestCase):
 
 class CommandCancellation(unittest.TestCase):
     def setUp(self):
-        self.store = make_store()
+        self.store = make_store(self)
         self.send = Mock()
         self.backend = Mock()
         self.commands = JobCommands(self.store, self.backend, self.send, channel="telegram")

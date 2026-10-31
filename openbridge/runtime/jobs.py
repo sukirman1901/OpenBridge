@@ -25,6 +25,14 @@ class DurableRuntime:
         self.threads = []
         self.drain_requested = drain_requested or (lambda: False)
         self.progress = progress
+        self.lifecycle = None
+
+    def _lifecycle(self, event, job):
+        if self.lifecycle:
+            try:
+                self.lifecycle(event, job)
+            except Exception:
+                pass  # Cosmetic channel activity cannot invalidate durable work.
 
     def run_prompt(self, backend, sid, text, timeout=120, purpose='reply'):
         """Track intent and accepted message IDs before waiting for backend work."""
@@ -65,7 +73,7 @@ class DurableRuntime:
 
     def checkpoint(self, sid):
         job = self.current_job()
-        if job:
+        if job and job.get('session_id') != sid:
             self.store.checkpoint(job["id"], sid)
             job["session_id"] = sid
 
@@ -80,11 +88,13 @@ class DurableRuntime:
         self.local.outputs = []
         status, error = "succeeded", None
         try:
+            self._lifecycle('start', job)
             self.execute(job, json.loads(job["payload"]))
             if not self.local.outputs and job["status_message_id"]:
                 self.local.outputs.append({"operation": "send", "text":
                     "✅ Done."})
         except RetryLater as pause:
+            status = 'deferred'
             self.store.defer(job_id, pause.delay)
             return
         except Exception as exc:
@@ -98,6 +108,7 @@ class DurableRuntime:
             outputs = self.local.outputs
             self.local.job = None
             self.local.outputs = []
+            self._lifecycle('deferred' if status == 'deferred' else 'finish', job)
         self.store.finish(job_id, outputs, status, error)
 
     def pump(self):
@@ -140,10 +151,10 @@ class DurableRuntime:
                     self.log("Job persistence/worker failure", job_id, type(future.exception()).__name__)
             future.add_done_callback(completed)
 
-    def deliver_one(self):
+    def deliver_one(self, media=None):
         if self.drain_requested():
             return False
-        delivery = self.store.claim_delivery()
+        delivery = self.store.claim_delivery(media=media)
         if delivery is None:
             return False
         try:
@@ -157,7 +168,8 @@ class DurableRuntime:
 
     def start(self):
         for name, action, interval in (("job-dispatch", self.pump, .25),
-                                       ("job-delivery", self.deliver_one, .5)):
+                                       ("job-delivery", lambda: self.deliver_one(media=0), .05),
+                                       ("file-delivery", lambda: self.deliver_one(media=1), .1)):
             def loop(action=action, interval=interval):
                 while not self.stopped.is_set():
                     try:

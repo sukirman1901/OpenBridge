@@ -1,7 +1,5 @@
 """Structured long-term memory: SQLite rows automatically injected into briefings."""
-import tempfile
 import unittest
-from unittest.mock import Mock
 
 from openbridge.services.briefing import conversation_briefing
 from store import Store
@@ -16,20 +14,20 @@ def briefing(memories):
 class MemoryStore(unittest.TestCase):
     def setUp(self):
         self.store = Store()
+        self.addCleanup(self.store.close)
 
     def test_add_list_forget_roundtrip(self):
         self.store.add_memory("999", 777, "Owner likes plain answers.")
         self.store.add_memory("999", 777, "Weekly report arrives Mondays.")
-        other = self.store.add_memory("111", 777, "Other bot's secret.")
+        self.store.add_memory("111", 777, "Other bot's secret.")
         rows = self.store.list_memories("999", 777)
         self.assertEqual([r["text"] for r in rows], ["Owner likes plain answers.", "Weekly report arrives Mondays."])
         self.assertTrue(self.store.forget_memory(rows[0]["id"]))
         self.assertEqual([r["text"] for r in self.store.list_memories("999", 777)],
                          ["Weekly report arrives Mondays."])
-        self.assertIsNone(self.store.get(rows[0]["id"])["text"] or None) if False else None
         # other bot's memory untouched
         self.assertEqual(len(self.store.list_memories("111", 777)), 1)
-        # forgotten id is gone entirely
+        # Already inactive: forgetting again must report no change.
         self.assertFalse(self.store.forget_memory(rows[0]["id"]))
 
     def test_empty_text_is_rejected(self):

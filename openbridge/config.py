@@ -83,7 +83,7 @@ def load_config(paths):
     data = copy.deepcopy(source)
     if not isinstance(data.get("bots", []), list) or not isinstance(data.get("owner_ids", []), list):
         raise ConfigurationError("bots and owner_ids must be lists")
-    for key in ("runtime", "trigger", "budget", "rate_limiter", "tugas", "retention"):
+    for key in ("runtime", "trigger", "budget", "rate_limiter", "tugas", "retention", "telegram"):
         if data.get(key) is not None and not isinstance(data[key], dict):
             raise ConfigurationError(f"{key} must be an object")
     for bot in data.get("bots", []):

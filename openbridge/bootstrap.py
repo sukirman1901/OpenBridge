@@ -24,6 +24,7 @@ from openbridge.adapters.persistence.sqlite import JobStore
 from openbridge.adapters.channels.telegram import TelegramClient
 from openbridge.adapters.channels.telegram.delivery import TelegramDelivery
 from openbridge.adapters.channels.telegram.media import TelegramMedia
+from openbridge.adapters.channels.telegram.presence import TelegramPresence
 from openbridge.adapters.channels.telegram.commands import TelegramCommands
 from openbridge.adapters.channels.telegram.gateway import TelegramGateway
 from openbridge.adapters.channels.telegram.approvals import notify_approval
@@ -62,6 +63,7 @@ class Components:
     approvals: object
     delivery: object
     resources: object = field(repr=False)
+    presence: object = field(repr=False)
 
 
 def create_application(configuration=None, *, backend=None, channel_call=None, log=None):
@@ -127,7 +129,15 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
                     and not bot["token"].startswith("ISI") and len(bot["token"]) > 20]
         def resolve(account_id):
             return next((bot for bot in config.get("bots", []) if bot.get("token") and bot_id(bot) == account_id), None)
-        delivery = TelegramDelivery(call, resolve, store.enqueue, log, home=home)
+        presence = TelegramPresence(call, resolve, log)
+        resources.callback(presence.close)
+        def lifecycle(event, job):
+            if event == 'start':
+                presence.open(job)
+            else:
+                presence.finish(job['id'], deferred=event == 'deferred')
+        runtime.lifecycle = lifecycle
+        delivery = TelegramDelivery(call, resolve, store.enqueue, log, home=home, presence=presence)
         output = OutputService(runtime, delivery)
         def send(bot, chat_id, text, buttons=None, cols=2):
             return output.send(bot_id(bot), chat_id, text, buttons, cols)
@@ -140,26 +150,18 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
         approvals = ApprovalRelay(lambda path, method, body: backend.request(path, method, body),
                                    lambda bot, owner, key, request: notify_approval(call, bot, owner, key, request), config["owner_ids"])
         def progress(job, sid, state):
-            labels = {'working': '⚙️ Processing…', 'waiting_approval': '⏳ Waiting for your approval…',
-                      'checking_backend': '🔄 Checking backend connection…'}
-            bot = resolve(job['account_id'])
-            if bot and job['status_message_id'] and state in labels:
-                call(bot['token'], 'editMessageText', {'chat_id': job['conversation_id'],
-                    'message_id': job['status_message_id'], 'text': labels[state],
-                    'reply_markup': {'inline_keyboard': [[{'text': 'Stop', 'callback_data': f'st-{sid}'}]]}}, timeout=5)
+            presence.update(job['id'], sid, state)
         def checkpoint(sid):
             runtime.checkpoint(sid)
             job = runtime.current_job()
-            if job and job["status_message_id"]:
-                bot = resolve(job["account_id"])
-                if bot:
-                    call(bot["token"], "editMessageText", {"chat_id": job["conversation_id"],
-                        "message_id": job["status_message_id"], "text": "⚙️ Processing…",
-                        "reply_markup": {"inline_keyboard": [[{"text": "Stop", "callback_data": f"st-{sid}"}]]}}, timeout=5)
+            if job:
+                presence.update(job['id'], sid, 'working')
         conversations = Conversations(home, config, backend, runtime, personas, approvals, context, meter, rate, send, checkpoint, log,
                                        memories=lambda identity, chat: store.list_memories(identity, chat),
                                        send_file=output.send_file,
-                                       prompt=lambda sid, text, **options: runtime.run_prompt(backend, sid, text, **options))
+                                       prompt=lambda sid, text, **options: runtime.run_prompt(backend, sid, text, **options),
+                                       prepared=jobs.session_prepared, mark_prepared=jobs.prepare_session,
+                                       usage=backend.last_usage if isinstance(backend, OpenCodeClient) else backend.session_info)
         provisioning = Provisioning(home, config, accounts, personas, call, send, edit,
                                      lambda bot: app.start_poller(bot), log)
         authorize = lambda user: authorized(config, user)
@@ -171,7 +173,7 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
                         channel="telegram").handle(bot_id(bot), chat_id, text)
         gateway = TelegramGateway(config=config, call=call, jobs=jobs, store=store, runtime=runtime, context=context,
             conversations=conversations, commands=commands, media=TelegramMedia(home, call, log), schedules=schedules,
-            authorize=authorize, send=send, controls=controls, stopped=stopped, log=log)
+            authorize=authorize, send=send, controls=controls, stopped=stopped, log=log, presence=presence)
         router = JobRouter(resolve, config, store, jobs, conversations, gateway, send, call, output)
         producer = BackgroundProducer(jobs, store, matches)
         def observe_execution(receipt):
@@ -203,6 +205,7 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
             if pruned:
                 log("Retention pruned", len(pruned), "settled jobs")
         loops = {
+            'telegram-presence': lambda: presence.run(stopped),
             'execution-reconciliation': lambda: periodic(stopped, 5, reconciler.tick, log, 'Execution reconciliation'),
             "schedule-producer": lambda: periodic(stopped, 20, schedule_tick, log, "Schedule producer"),
             "approval-relay": lambda: periodic(stopped, 2, approvals.poll, log, "Approval relay"),
@@ -219,5 +222,5 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
             bots=accounts, poller=gateway.poll, account_key=lambda bot: ("telegram", bot["token"].split(":", 1)[0]), prepare=prepare,
             background_loops=loops, log=log, pid_path=home / "bridge.pid", cleanup=closer.close)
         app.components = Components(configuration, store, tasks, jobs, context, meter, rate, backend, runtime,
-            conversations, commands, gateway, personas, schedules, maintenance, provisioning, approvals, delivery, closer)
+            conversations, commands, gateway, personas, schedules, maintenance, provisioning, approvals, delivery, closer, presence)
         return app

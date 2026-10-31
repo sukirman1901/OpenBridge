@@ -22,15 +22,17 @@ def session_key(bot, chat_id, persona, mode="grup"):
 
 class Conversations:
     def __init__(self, home, config, backend, runtime, personas, approvals, context, meter, rate, send, checkpoint, log,
-                 memories=None, send_file=None, prompt=None):
+                 memories=None, send_file=None, prompt=None, prepared=None, mark_prepared=None, usage=None):
         self.home, self.config, self.backend, self.runtime = home, config, backend, runtime
         self.personas, self.approvals, self.context, self.meter, self.rate = personas, approvals, context, meter, rate
         self.send, self.checkpoint, self.log = send, checkpoint, log
         self.memories = memories
         self.send_file = send_file
         self.prompt = prompt
+        self.prepared, self.mark_prepared, self.usage = prepared, mark_prepared, usage
         self.sessions, self.turns = {}, {}
         self.lock = threading.Lock()
+        self.session_locks = {}
 
     def _run_prompt(self, sid, text, timeout=120, purpose='reply'):
         if self.prompt:
@@ -46,18 +48,23 @@ class Conversations:
 
     def get(self, bot, chat_id, persona=None, mode="grup", handoff=""):
         persona = persona or {"nama": bot["nama"], "persona": bot.get("persona", "")}
-        def briefing():
+        key = session_key(bot, chat_id, persona, mode)
+        with self.lock:
+            lock = self.session_locks.setdefault(key, threading.Lock())
+        def briefing(summary=handoff):
             return conversation_briefing(name=persona["nama"], persona=persona["persona"], account_id=bot_id(bot),
                 chat_id=chat_id, memory_file=self.personas.memory(persona["nama"]),
                 schedule_file=self.home / "cron.json", persona_file=self.home / "personas.json",
-                provision_file=self.home / "provision.json", output_dir=self.home / "hasil", mode=mode, handoff=handoff,
+                provision_file=self.home / "provision.json", output_dir=self.home / "hasil", mode=mode, handoff=summary,
                 siblings=[row["nama"] for row in self.personas.list() if row["nama"] != persona["nama"]],
                 memories=self.memories(bot_id(bot), chat_id) if self.memories else ())
-        service = ConversationSessions(self.sessions, self.lock,
+        service = ConversationSessions(self.sessions, lock,
             lambda title: self.backend.open_session(title, str(self.home), self.permissions()),
             lambda sid, text, timeout: self._run_prompt(sid, text, timeout=timeout, purpose='briefing'),
-            lambda sid: self.approvals.register(sid, bot, chat_id), self.checkpoint, self.log)
-        return service.get(session_key(bot, chat_id, persona, mode),
+            lambda sid: self.approvals.register(sid, bot, chat_id), self.checkpoint, self.log,
+            prepared=(lambda sid, text: self.prepared(sid, briefing('') if handoff else text)) if self.prepared else None,
+            mark_prepared=(lambda sid, text: self.mark_prepared(sid, briefing('') if handoff else text)) if self.mark_prepared else None)
+        return service.get(key,
                            f"telegram-{bot_id(bot)}-{persona['nama']}-{chat_id}-{mode}", briefing)
 
     def reset(self, bot, chat_id, persona):
@@ -117,7 +124,11 @@ class Conversations:
                 self.send_file(identity, chat_id, item['path'], item['caption'], item['operation'])
         else:
             self.send(bot, chat_id, answer)
-        self.meter.extract_and_record(identity, self.backend.session_info(sid))
+        try:
+            usage = self.usage(sid) if self.usage else self.backend.session_info(sid)
+            self.meter.extract_and_record(identity, usage)
+        except Exception as error:
+            self.log('Usage accounting unavailable', type(error).__name__)
         key = conversation_key(bot, chat_id)
         self.turns[key] = self.turns.get(key, 0) + 1
         if kind == "private" and self.turns[key] >= int(self.config.get("compact_per_turns", 120)):
@@ -144,7 +155,8 @@ class Conversations:
         purpose = 'task_step' if job and job['kind'] == 'task' else job['kind'] if job else 'schedule'
         answer = self._run_prompt(sid, context + prompt, timeout=timeout, purpose=purpose)
         try:
-            self.meter.extract_and_record(bot_id(bot), self.backend.session_info(sid))
+            usage = self.usage(sid) if self.usage else self.backend.session_info(sid)
+            self.meter.extract_and_record(bot_id(bot), usage)
         except Exception as error:
             self.log("Usage accounting failed", type(error).__name__)
         return answer

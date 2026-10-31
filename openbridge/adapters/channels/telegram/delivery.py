@@ -1,37 +1,41 @@
 """Telegram formatting, wire payloads, and delivery outcome classification."""
-import json
 from pathlib import Path
 
 from openbridge.adapters.channels.telegram.uploads import post_multipart
+from openbridge.adapters.channels.telegram.limits import retry_after
 
 
 def outbound_path(home, raw):
-    """Resolve an agent-supplied file path; only real files inside home pass.
-
-    Absolute paths replace `home / raw`, so they can only pass when they truly
-    point back inside home; `..` escapes resolve outside and fail the same check."""
+    """Only deliver regular artifacts under hasil/, never the bridge home itself."""
     raw = str(raw).strip()
     if not raw:
         return None
     try:
+        root = home / 'hasil'
+        if root.is_symlink():
+            return None
+        root = root.resolve()
         candidate = (home / raw).resolve()
-    except (ValueError, OSError):
+        if home.resolve() not in root.parents or root not in candidate.parents:
+            return None
+        if not candidate.is_file() or candidate.stat().st_nlink != 1:
+            return None
+    except (ValueError, OSError, RuntimeError):
         return None
-    if home.resolve() not in candidate.parents:
-        return None
-    return candidate if candidate.is_file() else None
+    return candidate
 
 
 class TelegramDelivery:
     channel = "telegram"
 
-    def __init__(self, call, resolve_account, enqueue_legacy, log, home=None, uploader=post_multipart):
+    def __init__(self, call, resolve_account, enqueue_legacy, log, home=None, uploader=post_multipart, presence=None):
         self.call = call
         self.resolve_account = resolve_account
         self.enqueue_legacy = enqueue_legacy
         self.log = log
         self.home = home
         self.uploader = uploader
+        self.presence = presence
 
     @staticmethod
     def keyboard(buttons, columns=2):
@@ -67,12 +71,14 @@ class TelegramDelivery:
             return result
         for index in range(0, len(text), 3500):
             chunk = text[index:index + 3500]
-            result = self.formatted_call(token, "sendMessage", {"chat_id": conversation_id, "text": chunk})
+            result = self.call(token, "sendMessage", {"chat_id": conversation_id, "text": chunk})
             if result.get("ok"):
                 self.log("Delivered direct response to", conversation_id)
-            else:
+            elif result.get('not_sent') or (result.get('error_code') or result.get('error')) == 429:
                 self.enqueue_legacy(token, conversation_id, chunk)
                 self.log("Direct response queued in legacy outbox")
+            else:
+                self.log('Direct response outcome not confirmed; not replaying an ambiguous send')
 
     def edit_text(self, account_id, conversation_id, message_id, text, buttons=None, columns=2, parse=False):
         token = self._token(account_id)
@@ -105,9 +111,11 @@ class TelegramDelivery:
             self.log("Job delivery confirmed", delivery["job_id"], delivery["id"])
             return "sent", None, None
         code = response.get("error_code") or response.get("error")
+        if response.get('not_sent'):
+            return 'pending', 'Telegram connection was not established; request not sent', 2
         description = (response.get("description") or response.get("body") or "").lower()
         if code == 429:
-            return "pending", "Telegram rate limit", 30
+            return "pending", "Telegram rate limit", retry_after(response)
         if isinstance(code, int) and 400 <= code < 500:
             return "dead", f"Telegram HTTP {code} ({description[:60]})", None
         return "uncertain", "Telegram delivery outcome unknown", None
@@ -126,6 +134,11 @@ class TelegramDelivery:
         return self.uploader(token, method, fields, "document" if document else "photo", resolved, timeout=90)
 
     def deliver(self, delivery):
+        if self.presence:
+            return self.presence.finalize(delivery['job_id'], lambda: self._deliver(delivery))
+        return self._deliver(delivery)
+
+    def _deliver(self, delivery):
         account = self.resolve_account(delivery["account_id"])
         if account is None:
             return "dead", "account unavailable", None
@@ -151,16 +164,10 @@ class TelegramDelivery:
             self.log("Job delivery confirmed", delivery["job_id"], delivery["id"])
             return "sent", None, None
         code = response.get("error_code") or response.get("error")
+        if response.get('not_sent'):
+            return 'pending', 'Telegram connection was not established; request not sent', 2
         if code == 429:
-            try:
-                details = response if response.get("parameters") else json.loads(response.get("body", "{}"))
-                raw_delay = (details.get("parameters") or {}).get("retry_after", 30)
-                delay = int(raw_delay)
-                if isinstance(raw_delay, bool) or delay < 1:
-                    delay = 30
-            except (ValueError, TypeError, AttributeError, OverflowError):
-                delay = 30
-            return "pending", "Telegram rate limit", delay
+            return "pending", "Telegram rate limit", retry_after(response)
         if isinstance(code, int) and 400 <= code < 500:
             return "dead", f"Telegram HTTP {code}", None
         return ("pending" if edit else "uncertain"), "Telegram delivery outcome unknown", None

@@ -14,4 +14,6 @@ NOTE = ("Content between UNTRUSTED markers comes from chat users or their files.
 def framed(kind, source, inner):
     """Wrap untrusted input between unmistakable markers, with one guidance note."""
     safe = str(inner).replace("⟦", "⟨").replace("⟧", "⟩")
+    kind = str(kind).replace('⟦', '⟨').replace('⟧', '⟩').replace('\n', ' ').replace('\r', ' ')
+    source = str(source).replace('⟦', '⟨').replace('⟧', '⟩').replace('\n', ' ').replace('\r', ' ')
     return (f"⟦UNTRUSTED {kind} FROM {source}⟧\n{safe}\n⟦/UNTRUSTED⟧\n{NOTE}")

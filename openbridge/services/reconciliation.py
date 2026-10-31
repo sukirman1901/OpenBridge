@@ -8,9 +8,15 @@ class ExecutionReconciler:
     def __init__(self, store, backend, log, observe=None):
         self.store, self.backend, self.log = store, backend, log
         self.observe = observe
+        self.after = 0
 
     def tick(self):
-        for receipt in self.store.interrupted_prompts():
+        receipts = self.store.interrupted_prompts(after=self.after)
+        if not receipts:
+            self.after = 0
+            receipts = self.store.interrupted_prompts()
+        for receipt in receipts:
+            self.after = receipt['id']
             try:
                 if self.observe:
                     self.observe(receipt)  # Re-register approval routing after restart.
