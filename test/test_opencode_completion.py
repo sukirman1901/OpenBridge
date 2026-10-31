@@ -6,6 +6,23 @@ from openbridge.domain.errors import ExecutionUncertain, RetryLater
 
 
 class TestOpenCodeCompletion(unittest.TestCase):
+    def test_tracked_terminal_result_waits_for_session_drain_release(self):
+        client = self.client([{'data': []}])
+        client.messages = Mock(return_value=self.messages()['data'])
+        client.session_idle = Mock(side_effect=[False, True])
+        wait = Mock()
+        self.assertEqual(client.run_prompt('session', 'hello', on_state=Mock(), wait=wait), 'final')
+        self.assertEqual(client.session_idle.call_count, 2)
+        wait.assert_called_once_with(1)
+
+    def test_compaction_lookup_failure_remains_ambiguous_after_acceptance(self):
+        client = OpenCodeClient('http://local', (), Mock(side_effect=[
+            {'data': {}}, {'data': {'id': 'compact-1'}}, {'error': 503}]))
+        receipt = Mock()
+        with self.assertRaises(ExecutionUncertain):
+            client.compact_session('session', on_accepted=receipt, wait=Mock())
+        receipt.assert_called_once_with('compact-1')
+
     def test_compaction_waits_for_its_exact_terminal_receipt(self):
         transport = Mock(side_effect=[{'data': {}}, {'data': {'id': 'compact-1'}},
             {'data': [{'id': 'compact-1', 'type': 'compaction', 'time': {'created': 1}}]},
@@ -27,6 +44,8 @@ class TestOpenCodeCompletion(unittest.TestCase):
                 return {'data': {'id': 'current-user'}}
             if url.endswith('/permission'):
                 return {'data': [{'id': 'permission-1'}] if now[0] < 4 else []}
+            if url.endswith('/inbox'):
+                return {'data': []}
             if url.endswith('/message'):
                 return self.messages() if now[0] >= 5 else {'data': [
                     {'id': 'current-user', 'type': 'user', 'time': {'created': 10}}]}

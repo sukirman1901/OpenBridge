@@ -103,7 +103,10 @@ class OpenCodeClient:
                 raise ExecutionUncertain('Compaction receipt could not be persisted') from error
         deadline = clock() + timeout
         while clock() < deadline:
-            result = self.completion(sid, receipt)
+            try:
+                result = self.completion(sid, receipt)
+            except Exception as error:
+                raise ExecutionUncertain('Compaction result lookup failed after acceptance') from error
             if result and self.session_idle(sid):
                 if result['outcome'] != 'succeeded':
                     raise RuntimeError('Compaction failed')
@@ -225,6 +228,10 @@ class OpenCodeClient:
                     on_state('checking_backend')
                 if errors >= 3:
                     raise ExecutionUncertain('OpenCode result lookup failed') from error
+                result = None
+            if result and on_state and not self.session_idle(session_id):
+                # A terminal history entry can be visible just before the
+                # session drain is released. Do not race the next operation.
                 result = None
             if result:
                 if result.get('requires_idle') and not self.session_idle(session_id):

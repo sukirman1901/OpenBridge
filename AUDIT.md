@@ -61,6 +61,12 @@ review. This is execution-state SSE, not Telegram token-by-token text streaming.
 External Yahoo 429, missing dependencies, or denied approvals remain legitimate
 task failures, not reasons to repeat tool execution automatically.
 
+Post-review guard: accepted compaction lookup failures are explicitly uncertain,
+not ordinary failures; tracked terminal results also wait for session drain
+release before allowing the next operation. Two additional regression tests
+cover these races; the compaction lookup test reproduced the failure before its
+fix. Final default/WIB suite: 452 tests pass.
+
 ## Late tool result after interactive timeout (2026-10-31)
 
 Job 32 timed out in the bridge's default 120-second interactive window while
