@@ -351,6 +351,25 @@ class JobStore:
             self.db.execute("UPDATE runtime_jobs SET session_id=? WHERE id=? AND status='running'", (session_id, job_id))
             self.db.execute("UPDATE runtime_runs SET session_id=? WHERE job_id=? AND status='running'", (session_id, job_id))
 
+    def cancel_queued(self, job_id):
+        """Cancel durable work that has not started running yet.
+
+        Only queued jobs (including quota-deferred ones) are cancellable; a
+        running claim always wins and returns False. The claim fence makes the
+        in-memory dispatcher safe: a submitted future whose job was cancelled
+        simply claims nothing and exits."""
+        now = self.clock()
+        with self.transaction():
+            cur = self.db.execute(
+                "UPDATE runtime_jobs SET status='cancelled',updated_at=? WHERE id=? AND status='queued'",
+                (now, job_id))
+            if not cur.rowcount:
+                return False
+            self.db.execute(
+                "UPDATE runtime_runs SET status='cancelled',finished_at=? "
+                "WHERE job_id=? AND status='deferred'", (now, job_id))
+            return True
+
     def finish(self, job_id, outputs, status="succeeded", error=None):
         if status not in ("succeeded", "failed", "interrupted"):
             raise ValueError("Invalid terminal job status")

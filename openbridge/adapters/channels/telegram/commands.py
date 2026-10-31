@@ -61,7 +61,7 @@ class TelegramCommands:
         persona = persona or {"nama": bot["nama"], "persona": bot.get("persona", "")}
         if command in ("help", "bantuan", "menu"):
             self.send(bot, chat_id, "📖 Commands: /model /agent /persona /jadwal /tugas /status /new /reset\n"
-                "Private job controls: /jobs /job <id> /result <id> /resolve <id>.\n"
+                "Private job controls: /jobs /job <id> /result <id> /cancel <id> /resolve <id>.\n"
                 "Routines by chat: 'remind me tomorrow at 5', 'tiap senin jam 8', "
                 "'jeda jadwal 2', 'lanjutkan jadwal 2', 'ubah jadwal 2 ke jam 9', "
                 "'batalkan jadwal 2', 'batalkan semua jadwal'.", buttons=[
@@ -158,6 +158,18 @@ class TelegramCommands:
                     return
                 self.store.delete_schedule(identity)
                 self.panel(bot, chat_id, "jadwal", message_id)
+            elif data.startswith("jx-"):
+                identity = int(data[3:])
+                job = self.jobs.get(identity)
+                if (not job or job["channel"] != "telegram" or job["account_id"] != bot_id(bot)
+                        or job["conversation_id"] != str(chat_id)):
+                    answer("Job does not belong to this conversation.")
+                    return
+                if job["status"] == "queued" and self.jobs.cancel_queued(identity):
+                    answer(f"Job #{identity} cancelled")
+                    self.edit(bot, chat_id, message_id, f"🚫 Job #{identity} cancelled before it ran.")
+                else:
+                    answer("The job already started; it can no longer be cancelled here.")
                 answer("Schedule deleted")
             else:
                 answer("Control expired; reopen /help.")

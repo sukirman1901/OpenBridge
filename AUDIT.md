@@ -413,3 +413,12 @@ needs RetryLater), then implemented; suite 369 OK, all green.
 Deploy: ./stop.sh + supervise.sh restart; single supervisor/poller; bot online
 offset 19758732. Note: until the OpenCode-side quota resets, deferred jobs
 will re-attempt every 15 minutes and keep parking quota pauses durably.
+
+## ✅ Batch 2 — queued-job cancellation (07:3x UTC+7)
+
+Adds `/cancel <id>` (owner private chat) plus a Cancel button on `/job <id>`
+for queued jobs. Durable: only status='queued' (incl. quota-deferred) flips to
+'cancelled'; a running claim wins and refuses. The dispatcher is collision-free:
+cancelled jobs claim nothing and exit. TDD: test_job_cancel.py (9 tests) written
+first, then store + JobCommands + gateway routing + `jx-` callback. Suite now
+378 OK; compileall clean.

@@ -26,6 +26,12 @@ All notable changes to OpenBridge are documented here. This project follows the 
   ownership guards before any item op.
 - 25 new tests (`test/test_routines.py`); full suite is now 366 passing.
 
+### Added
+- **Cancel queued jobs**: `/cancel <id>` in the owner's private chat (and a
+  Cancel button on `/job <id>`) cancels durable work that has not started
+  running — including quota-deferred jobs. Running jobs still can't be
+  cancelled here; the claim fence keeps an already-submitted worker safe.
+
 ### Fixed
 - **One-shot anchors are timezone-proof**: stored one-shot expressions are
   UTC-naive, but the firing evaluation read them as the host's local time —

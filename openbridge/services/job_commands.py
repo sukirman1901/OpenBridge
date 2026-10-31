@@ -9,7 +9,7 @@ from openbridge.ports.execution import ExecutionBackend
 
 
 class JobCommands:
-    commands = frozenset(("/job", "/jobs", "/resolve", "/result"))
+    commands = frozenset(("/job", "/jobs", "/resolve", "/result", "/cancel"))
 
     def __init__(self, jobs, backend: ExecutionBackend, send, *, channel):
         self.jobs = jobs
@@ -27,18 +27,30 @@ class JobCommands:
             jobs = self.jobs.list_jobs(account_id, conversation_id, channel=self.channel)
             report = "\n".join(f"#{job['id']} ({job['kind']}/{job['lane']}): {job['status']}; "
                                f"delivery: {job['delivery_state'] or 'none'}" for job in jobs) or "No durable jobs yet."
-            self.send(report + "\nUse /result <id> to retrieve a saved result.")
+            self.send(report + "\nUse /result <id> to retrieve a saved result, /cancel <id> to cancel a queued one.")
             return
         if len(parts) < 2 or not parts[1].isdigit():
-            self.send("Usage: /job <id>, /result <id>, or /resolve <id> confirm")
+            self.send("Usage: /job <id>, /result <id>, /cancel <id>, or /resolve <id> confirm")
             return
         job = self.jobs.get(int(parts[1]))
         if (not job or job["channel"] != self.channel or job["account_id"] != account_id
                 or job["conversation_id"] != str(conversation_id)):
             self.send("Job not found in this conversation.")
             return
+        if command == "/cancel":
+            if job["status"] == "queued":
+                if self.jobs.cancel_queued(job["id"]):
+                    self.send(f"🚫 Job #{job['id']} cancelled; it never started running and stays examinable in /jobs.")
+                else:
+                    self.send(f"Job #{job['id']} already running; it can no longer be cancelled here.")
+                return
+            self.send(f"Job #{job['id']} is already running; it can no longer be cancelled here."
+                      if job["status"] == "running" else f"Job #{job['id']} is {job['status']}; nothing to cancel.")
+            return
         if command == "/job":
             actions = [("Stop", f"st-{job['session_id']}")] if job["status"] == "running" and job["session_id"] else None
+            if job["status"] == "queued":
+                actions = [("Cancel", f"jx-{job['id']}")]
             progress = ""
             if job["kind"] == "task":
                 task = json.loads(job["payload"])

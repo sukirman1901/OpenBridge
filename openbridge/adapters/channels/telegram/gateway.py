@@ -31,7 +31,7 @@ class TelegramGateway:
         text = (message.get("text") or "").strip()
         command = text.split(maxsplit=1)[0].split("@")[0] if text else ""
         control = bool(callback and callback.get("data", "").startswith(("ap-y-", "ap-n-", "st-")))
-        management = not callback and chat.get("type") == "private" and command in ("/job", "/jobs", "/resolve", "/result")
+        management = not callback and chat.get("type") == "private" and command in ("/job", "/jobs", "/resolve", "/result", "/cancel")
         job_id, created = self.jobs.accept(conversation_key(bot, chat.get("id", "ignored")), update["update_id"],
             {"update": update, "username": bot.get("username", "")} if permitted else {}, enqueue=permitted and not (control or management))
         if not created or not permitted:
