@@ -5,6 +5,10 @@ All notable changes to OpenBridge are documented here. This project follows the 
 ## [Unreleased]
 
 ### Fixed
+- Ordinary tool-using chat requests have a 15-minute execution budget rather
+  than timing out before the five-minute owner-approval window can finish.
+- Verified late backend results can be settled by an operator and delivered
+  durably without replaying execution.
 - Aborted backend turns without idle history no longer falsely fence a chat
   when the backend is verified inactive with an empty inbox. Unknown states
   still require review; interrupted execution is never automatically replayed.

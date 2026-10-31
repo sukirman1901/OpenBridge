@@ -25,6 +25,9 @@ class NaturalFiles(unittest.TestCase):
         prompt = p.backend.run_prompt.call_args.args[1]
         self.assertIn('@file hasil/', prompt)
         self.assertIn('No slash command is required', prompt)
+        # Tool approvals alone can wait up to five minutes; a two-minute
+        # interactive timeout falsely interrupts otherwise healthy work.
+        self.assertGreaterEqual(p.backend.run_prompt.call_args.kwargs['timeout'], 900)
 
     def test_tomorrow_schedule_in_ordinary_chat_is_once_not_daily(self):
         app = make_application(self)

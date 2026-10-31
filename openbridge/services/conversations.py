@@ -96,7 +96,11 @@ class Conversations:
             "Respect approval decisions; if denied, explain the block rather than bypassing it. "
             "Scheduling is available in ordinary chat; ask for a missing time instead of claiming a reminder exists.\n"
         )
-        answer = self.backend.run_prompt(sid, capabilities + f"[Recent conversation context]:\n{context}\n\n{framed('MESSAGE', sender, text)}")
+        # Owner approval requests may remain pending for five minutes. The
+        # backend's short default is not a suitable wall-clock budget for
+        # interactive tool work; expiry must still fence unknown execution.
+        answer = self.backend.run_prompt(sid, capabilities + f"[Recent conversation context]:\n{context}\n\n{framed('MESSAGE', sender, text)}",
+                                         timeout=900)
         self.context.append(chat_id, "bot", answer, name=bot["nama"])
         if self.send_file:
             cleaned, files = parse_file_outputs(answer)

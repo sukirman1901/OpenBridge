@@ -1,5 +1,26 @@
 # Bridge audit
 
+## Late tool result after interactive timeout (2026-10-31)
+
+Job 32 timed out in the bridge's default 120-second interactive window while
+the backend was still executing tools/awaiting approvals. Backend history later
+showed a successful idle result after roughly six minutes. The actual answer
+reported Yahoo Finance HTTP 429 and missing yfinance, not a ChatGPT quota issue.
+The approval relay alone permits a five-minute wait, so the old two-minute
+interactive budget was internally inconsistent. Ordinary interactive requests
+now pass an explicit 900-second budget. This remains bounded; truly unknown
+execution still fences and is not replayed automatically.
+
+Added operator-only reconcile_completed: after external verification of session
+inactivity, empty inbox, and a result correlated to the job, it records the late
+result durably and appends a final delivery without re-executing the prompt.
+Two new persistence tests and an extended natural-chat timeout regression pass;
+full suite 423 tests pass. Stopped bridge, verified job 32's single accepted
+user request (Mana), latest idle succeeded, and session inactive/inbox empty.
+Reconciled job 32 to succeeded with its actual final answer, then restarted the
+supervisor. Pending chat messages became eligible again. No blanket unblocking,
+approval bypass, or repeated data-fetch execution.
+
 ## Fix false interrupted fence and restore processing (2026-10-31)
 
 The owner requested restoration of service, not merely renamed status notices.

@@ -428,6 +428,36 @@ class JobStore:
                                 ("pending" if operation == "edit" else "uncertain", row["id"]))
         return interrupted
 
+    def reconcile_completed(self, job_id, outputs):
+        """Operator-only settlement after verifying a late terminal backend result.
+
+        The caller must verify session inactivity, an empty inbox, and correlate
+        the result to this job. This never claims, resumes, or replays execution.
+        Existing delivery records remain as history; the final result gets a new
+        sequence so an already-sent review notice can be replaced durably.
+        """
+        now = self.clock()
+        with self.transaction():
+            job = self.get(job_id)
+            if not job or job['status'] != 'interrupted':
+                return False
+            self.db.execute("UPDATE runtime_jobs SET status='succeeded',result=?,error=NULL,updated_at=? WHERE id=?",
+                            (json.dumps(outputs, ensure_ascii=False), now, job_id))
+            self.db.execute("UPDATE runtime_runs SET status='succeeded',error=NULL,finished_at=? "
+                            "WHERE job_id=? AND status='interrupted'", (now, job_id))
+            self._project_task(job, 'succeeded', outputs, None)
+            sequence = self.db.execute("SELECT COALESCE(MAX(sequence),-1)+1 FROM runtime_deliveries WHERE job_id=?",
+                                       (job_id,)).fetchone()[0]
+            for index, output in enumerate(outputs):
+                output = dict(output)
+                if index == 0 and output['operation'] == 'send' and job['status_message_id']:
+                    output.update(operation='edit', message_id=job['status_message_id'])
+                self.db.execute("INSERT INTO runtime_deliveries(job_id,sequence,channel,account_id,conversation_id,"
+                                "payload,status,next_try,created_at) VALUES(?,?,?,?,?,?,'pending',?,?)",
+                                (job_id, sequence + index, job['channel'], job['account_id'], job['conversation_id'],
+                                 json.dumps(output, ensure_ascii=False), now, now))
+            return True
+
     def resolve(self, job_id):
         """Explicit operator reconciliation, not an execution retry."""
         with self.transaction():
