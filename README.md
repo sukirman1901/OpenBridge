@@ -124,6 +124,15 @@ their private chat with the bot:
 | `/resolve <id>` | 🔎 Reconcile an interrupted job after a crash |
 | `/new`, `/reset` | ♻️ Fresh context / wipe memory |
 
+**Routines in plain language** — create them by chatting, and manage each one
+by its id from `/jadwal`:
+
+- Create: `remind me tomorrow at 5` · `ingetin aku besok jam 5` ·
+  `jadwalkan konten jam 8` · `tiap senin jam 8` (real weekly cron)
+- Manage: `jeda jadwal 2` (pause) · `lanjutkan jadwal 2` (resume) ·
+  `ubah jadwal 2 ke jam 9` (edit) · `batalkan jadwal 2` (delete one) ·
+  `batalkan semua jadwal` (delete all — explicit on purpose)
+
 Everything a job does persists in SQLite first: send survives restarts,
 ambiguous sends are quarantined instead of duplicated, and nothing replays
 silently after a crash — you decide via `/resolve`.

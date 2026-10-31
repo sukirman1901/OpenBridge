@@ -348,3 +348,19 @@ Reviewed at commit 9bf944d by an outside reviewer; findings resolved as follows:
 Do not expose the service publicly or accept arbitrary group members' commands.
 Next phase: task queue + [DIAM]-default initiative layer, then OS-level isolation
 on a suitable host. Runtime provider availability must be verified, not assumed.
+
+## ✅ Deploy record — 2026-10-31 06:27 UTC+7: routine engine (v0.3.0)
+
+Changes: per-item routine management in natural language (pause/resume/edit/
+delete-one), weekly cron routines from plain language, /jadwal panel with ids
+and paused states, ambiguous "batalkan jadwal" now asks instead of wiping all,
+explicit "batalkan semua jadwal" required for a wipe. Store gains
+get_schedule/set_schedule_active/update_schedule_expr — no schema change
+(migrations stay 1/2/3).
+
+Verification after deploy:
+- `./stop.sh` clean drain; supervision restarted, bridge online (offset 19758731).
+- Telegram getMe → OK @Openuna_bot; 13 commands registered.
+- SQLite quick_check ok, foreign_key_check empty, migrations [(1,), (2,), (3,)].
+- 8 succeeded jobs preserved.
+- Tests: 366 OK (341 prior + 25 new in test/test_routines.py); compileall clean.

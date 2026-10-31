@@ -211,6 +211,33 @@ class Store:
         """Delete a schedule. True when a row was actually removed."""
         return self._exec("DELETE FROM schedules WHERE id = ?", (schedule_id,)).rowcount > 0
 
+    def get_schedule(self, schedule_id):
+        """One schedule row (sqlite3.Row) or None when the id does not exist."""
+        rows = self._query("SELECT * FROM schedules WHERE id = ?", [schedule_id])
+        return rows[0] if rows else None
+
+    def set_schedule_active(self, schedule_id, active):
+        """Pause (0) or resume (1) a schedule without deleting it. True when a row existed."""
+        cur = self._exec("UPDATE schedules SET active = ? WHERE id = ?",
+                         (1 if active else 0, schedule_id))
+        return cur.rowcount > 0
+
+    def update_schedule_expr(self, schedule_id, expr, kind=None, prompt=None):
+        """Edit a schedule's expression, and optionally its kind/prompt, in place.
+
+        The row stays active; nothing else is touched. True when a row was updated."""
+        row = self.get_schedule(schedule_id)
+        if row is None:
+            return False
+        kind = row["kind"] if kind is None else kind
+        if kind not in KINDS:
+            raise ValueError(f"kind must be one of {KINDS}, got: {kind!r}")
+        prompt = row["prompt"] if prompt is None else prompt
+        cur = self._exec(
+            "UPDATE schedules SET expr = ?, kind = ?, prompt = ? WHERE id = ?",
+            (str(expr), kind, str(prompt), schedule_id))
+        return cur.rowcount > 0
+
     # ── outbox ───────────────────────────────────────────────────
     def enqueue(self, token, chat_id, text, now=None):
         """Put a message into the send queue. Idempotent: an identical pending

@@ -2,6 +2,30 @@
 
 All notable changes to OpenBridge are documented here. This project follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-31 — Routine engine
+
+### Added
+- **Per-item routine management in natural language**: `jeda jadwal 2` pauses,
+  `lanjutkan jadwal 2` resumes, `ubah jadwal 2 ke jam 9` edits, and
+  `batalkan jadwal 2` deletes a single numbered routine. The bare phrase
+  "batalkan jadwal" no longer deletes everything — it now asks which routine,
+  and wiping a chat's schedules requires the explicit "batalkan semua jadwal".
+- **Weekly routines from plain language**: `tiap senin jam 8` and
+  `every friday 09:15` persist a real cron expression (`00 08 * * 1`), so a
+  stated weekday keeps its weekday.
+- **/jadwal panel with ids and states**: rows show `#id`, kind or `⏸
+  paused`, human-readable expressions, and deletion buttons with the id.
+- New durable store operations: `get_schedule`, `set_schedule_active`
+  (pause/resume without deletion), and `update_schedule_expr` (edit time
+  while preserving kind/prompt). No schema change; the migrations stay 1/2/3.
+
+### Changed
+- Routine parsing moved into `openbridge/services/routines.py` as pure,
+  tested functions (`parse_directive`, `parse_creation`, `format_expr`);
+  `Schedules.interpret` is now a thin dispatcher that applies account and chat
+  ownership guards before any item op.
+- 25 new tests (`test/test_routines.py`); full suite is now 366 passing.
+
 ## [0.2.0] - 2026-10-31 — Modular autonomous-agent runtime
 
 ### Added

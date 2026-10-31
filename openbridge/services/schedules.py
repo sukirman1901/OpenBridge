@@ -1,9 +1,11 @@
-"""Legacy schedule import, display, and natural-language reminder parsing."""
+"""Legacy schedule import, display, and natural-language routine management."""
 from datetime import datetime, timedelta, timezone
 import re
 import time
 
 from openbridge.infrastructure.files import read_json, write_json
+from openbridge.services.routines import (WIB, parse_creation, parse_directive,
+                                          format_expr)
 from runtime_policy import schedule_owner
 
 WIB = timezone(timedelta(hours=7))
@@ -57,27 +59,83 @@ class Schedules:
         if source != retained:
             write_json(self.path, retained)
 
-    def list(self):
+    def list(self, active_only=True):
         return [{"id": row["id"], "bot_id": row["bot_id"], "chat_id": int(row["chat_id"]),
-                 "jam": row["expr"], "prompt": row["prompt"], "last_fired": row["last_fired"]}
-                for row in self.store.list_schedules(active_only=True)]
+                 "jam": row["expr"], "prompt": row["prompt"], "last_fired": row["last_fired"],
+                 "kind": row["kind"], "active": bool(row["active"])}
+                for row in self.store.list_schedules(active_only=active_only)]
 
     def interpret(self, account_id, conversation_id, text, addressed):
-        if re.search(r"batalkan jadwal", text, re.I):
+        """Handle one message as either a routine op, a new routine, or None."""
+        directive = parse_directive(text)
+        if directive:
+            return self._apply_directive(account_id, conversation_id, directive)
+        spec = parse_creation(text) if addressed else None
+        if spec is None:
+            return None
+        prompt = f"Send a short reminder using this context: {text[:200]}"
+        schedule_id = self.store.add_schedule(account_id, int(conversation_id), spec["expr"], spec["kind"], prompt)
+        detail = f"#{schedule_id}" if spec["kind"] == "once" else f"#{schedule_id}"
+        if spec["kind"] == "once":
+            return f"✅ Routine {detail} set for {spec['display']} WIB ({spec['label']}) — edit, pause, or cancel it anytime."
+        return f"✅ Routine {detail} saved: {spec['display']} — edit, pause, or cancel it anytime."
+
+    def _apply_directive(self, account_id, conversation_id, directive):
+        operation = directive["op"]
+        if operation == "ambiguous_cancel":
+            return ("⏳ Which routine? Use /jadwal to see the numbered list, then say e.g. "
+                    "'batalkan jadwal 2'. Say 'batalkan semua jadwal' to clear every routine in this chat.")
+        if operation == "cancel_all":
+            removed = 0
             for row in self.store.list_schedules():
                 if str(row["bot_id"]) == account_id and int(row["chat_id"]) == int(conversation_id):
-                    self.store.delete_schedule(row["id"])
-            return "🗑️ All schedules in this chat are cancelled."
-        reminder = re.search(r"(?:ingetin|ingatkan|remind\w*)\s*(?:aku|kami|saya)?\s*(besok|lusa)?\s*[a-z ]{0,10}?(?:jam|pukul)\s*(\d{1,2})(?:[.:](\d{2}))?", text, re.I)
-        if reminder and addressed:
-            days = {"besok": 1, "lusa": 2}.get(reminder.group(1) or "", 0)
-            clock = f"{int(reminder.group(2)) % 24:02d}:{(reminder.group(3) or '00')[:2].zfill(2)}"
-            expression, display, when = one_shot(days, clock)
-            self.store.add_schedule(account_id, int(conversation_id), expression, "once", f"Send a short reminder using this context: {text[:200]}")
-            return f"✅ I'll remind you at {display} WIB ({when})."
-        daily = re.search(r"jadwalkan.*?(?:jam|pukul)\s*(\d{1,2})(?:[.:](\d{2}))?", text, re.I)
-        if daily and addressed:
-            clock = f"{int(daily.group(1)) % 24:02d}:{(daily.group(2) or '00')[:2].zfill(2)}"
-            self.store.add_schedule(account_id, int(conversation_id), clock, "cron", "Send a short warm greeting.")
-            return f"✅ I'll greet here every day at {clock} WIB."
-        return None
+                    removed += 1 if self.store.delete_schedule(row["id"]) else 0
+            return f"🗑️ All {removed} routine(s) in this chat are cancelled."
+        schedule_id = directive["id"]
+        row = self.store.get_schedule(schedule_id)
+        if row is None or str(row["bot_id"]) != account_id or int(row["chat_id"]) != int(conversation_id):
+            return f"❓ No routine #{schedule_id} in this chat. /jadwal shows the numbered list."
+        if operation == "delete":
+            self.store.delete_schedule(schedule_id)
+            return f"🗑️ Routine #{schedule_id} ({format_expr(row)}) deleted."
+        if operation == "pause":
+            self.store.set_schedule_active(schedule_id, False)
+            return f"⏸ Routine #{schedule_id} ({format_expr(row)}) paused — resume with 'lanjutkan jadwal {schedule_id}'."
+        if operation == "resume":
+            self.store.set_schedule_active(schedule_id, True)
+            return f"▶️ Routine #{schedule_id} ({format_expr(row)}) resumed."
+        # edit
+        delta = int(directive["hour"]) % 24, int(directive["minute"]) % 60
+        if row["kind"] == "once":
+            try:
+                current = datetime.strptime(str(row["expr"]), "%Y-%m-%d %H:%M")
+            except ValueError:
+                return f"⚠️ Routine #{schedule_id} cannot be edited as a time expression."
+            if directive["offset"]:
+                # "besok"/"lusa": recompute the date from today (WIB) like new
+                # one-shots, then convert to the stored UTC-naive convention.
+                now_wib = datetime.now(WIB)
+                target = (now_wib + timedelta(days=int(directive["offset"]))).replace(
+                    hour=delta[0], minute=delta[1], second=0, microsecond=0)
+                if target <= now_wib:
+                    target += timedelta(days=1)
+                expression = time.strftime("%Y-%m-%d %H:%M", time.gmtime(target.timestamp()))
+            else:
+                current = current.replace(hour=delta[0], minute=delta[1])
+                current = current.replace(tzinfo=timezone.utc)
+                if current <= datetime.now(timezone.utc):
+                    current += timedelta(days=1)
+                expression = current.strftime("%Y-%m-%d %H:%M")
+        elif row["kind"] == "cron":
+            if re.fullmatch(r"(\d{1,2}) (\d{1,2}) \* \* (\d)", str(row["expr"]).strip()):
+                parts = str(row["expr"]).split()
+                expression = f"{delta[1]:02d} {delta[0]:02d} * * {parts[4]}"
+            elif re.fullmatch(r"\d{1,2}:\d{2}", str(row["expr"]).strip()):
+                expression = f"{delta[0]:02d}:{delta[1]:02d}"
+            else:
+                return f"⚠️ Routine #{schedule_id} has a server-managed expression; delete and recreate it instead."
+        else:
+            return f"⚠️ Interval routines aren't editable; delete routine #{schedule_id} and recreate it."
+        self.store.update_schedule_expr(schedule_id, expression)
+        refreshed = self.store.get_schedule(schedule_id)
+        return f"✏️ Routine #{schedule_id} updated to {format_expr(refreshed)}."

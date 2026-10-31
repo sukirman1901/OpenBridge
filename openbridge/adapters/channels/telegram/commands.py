@@ -4,6 +4,7 @@ import time
 
 from runtime_policy import bot_id
 from openbridge.services.conversations import session_key
+from openbridge.services.routines import format_expr
 
 
 class TelegramCommands:
@@ -31,9 +32,15 @@ class TelegramCommands:
         elif kind == "persona":
             text = "👥 Active personas:\n" + "\n".join(f"• {row['nama']} — {str(row['persona'])[:50]}" for row in self.personas.list())
         else:
-            rows = [row for row in self.schedules.list() if row["bot_id"] == bot_id(bot) and int(row["chat_id"]) == int(chat_id)]
-            text = "⏰ This chat's schedules:\n" + "\n".join(f"• {row['jam']} — {row['prompt'][:40]}" for row in rows) if rows else "🗓️ No schedule in this chat yet."
-            buttons = [(f"Delete {row['jam']}", f"jd-{row['id']}") for row in rows] or None
+            rows = [row for row in self.schedules.list(active_only=False)
+                    if row["bot_id"] == bot_id(bot) and int(row["chat_id"]) == int(chat_id)]
+            text = ("⏰ This chat's routines:\n" + "\n".join(
+                f"• #{row['id']} {'⏸ disabled' if not row['active'] else row['kind']} "
+                f"{format_expr({'kind': row['kind'], 'expr': row['jam']})} — {row['prompt'][:40]}"
+                for row in rows)
+                if rows else "🗓️ No routine in this chat yet. Try 'remind me tomorrow at 5' or 'jadwalkan konten jam 8'.")
+            text += "\nPause: 'jeda jadwal 2' · Resume: 'lanjutkan jadwal 2' · Edit: 'ubah jadwal 2 ke jam 9'."
+            buttons = [(f"Del #{row['id']}", f"jd-{row['id']}") for row in rows] or None
         if message_id is None:
             self.send(bot, chat_id, text, buttons=buttons, cols=columns)
         else:
@@ -54,7 +61,10 @@ class TelegramCommands:
         persona = persona or {"nama": bot["nama"], "persona": bot.get("persona", "")}
         if command in ("help", "bantuan", "menu"):
             self.send(bot, chat_id, "📖 Commands: /model /agent /persona /jadwal /tugas /status /new /reset\n"
-                "Private job controls: /jobs /job <id> /result <id> /resolve <id>.", buttons=[
+                "Private job controls: /jobs /job <id> /result <id> /resolve <id>.\n"
+                "Routines by chat: 'remind me tomorrow at 5', 'tiap senin jam 8', "
+                "'jeda jadwal 2', 'lanjutkan jadwal 2', 'ubah jadwal 2 ke jam 9', "
+                "'batalkan jadwal 2', 'batalkan semua jadwal'.", buttons=[
                 ("Model", "c-md"), ("Agent", "c-persona"), ("Schedules", "c-jd"),
                 ("Personas", "c-ps"), ("Status", "c-st"), ("Reset", "c-rs")])
         elif command in ("model", "md") and argument:
