@@ -377,3 +377,26 @@ CI now reruns the full suite under TZ=Asia/Jakarta.
 Verified: full suite OK under TZ=UTC, TZ=Asia/Jakarta, and TZ=America/New_York.
 Bridge restarted via ./stop.sh + supervise.sh after the fix: single supervisor,
 single poller, Telegram bot online (offset 19758731), daily backup saved.
+
+## ✅ Live reminder E2E check — 2026-10-31 06:51 UTC+7 (explicit "BELUM DICEK" item)
+
+Method: a one-shot schedule (id 1, once, prompt "Say exactly this: ⏰ LIVE-CHECK")
+was inserted directly into the durable `schedules` table with expr
+"2026-10-31 06:51" (UTC-naive, real target 06:51:00) while the bridge ran.
+
+Result:
+- **Trigger timing verified on time**: trigger row + job #9 created at
+  epoch 1793429469.7 = 06:51:09.7 — 9.7 s after the target (one pump tick).
+  The UTC reading of stored one-shot expressions works live.
+- **Content delivery failed — OpenCode backend quota, not the bridge**: the
+  scheduled session's idle outcome was `failed` with provider error
+  `provider.chatgpt-limit` ("ChatGPT usage limit reached"). run marked the job
+  `failed` durably, and the standard failure notice ("⚠️ Job #9 failed. Use
+  /jobs for status.") was delivered to the chat.
+- The durable safety net behaved exactly as documented: terminal failure,
+  no replay, owner notice sent.
+- Improvement candidate: classify provider-limit outcomes as RetryLater
+  (quota pause, deferred re-execution) instead of a terminal failure, since
+  the run shows zero tokens (the prompt never executed).
+
+Cleanup: schedule row 1 deleted after the check.
