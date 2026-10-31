@@ -676,3 +676,56 @@ TDD: test_typing.py (3 tests) written first (loop sends typing and stops,
 survives a failing channel, execute triggers typing before answer). Suite 413
 OK; compileall clean. Reload healthy (single supervisor/poller, bot online
 offset 19758739).
+
+## ✅ Latency + stress audit round (16:0x UTC+7, 2026-10-31)
+
+User report "audit total lakukan stress testing hingga semua lancar". Full
+audit of the reply hot path plus repeatable load testing.
+
+Diagnosis (measured on jobs 38–40): queue 1.5 s, before-prompt 4.6–15.2 s
+(synchronous status/typing Telegram calls + re-briefing after restart),
+backend only 3–5 s. Fix targets bridge overhead, not timeouts.
+
+Changes (all TDD first):
+- TelegramPresence service (off-thread, bounded 256-capacity, coalescing):
+  typing/status/ack calls never block execution; status edits skip duplicate
+  labels; wire lock fences final delivery against stale cosmetic edits;
+  ambiguous ACK network sends are never re-sent, only storage-retried.
+- Default path drops the queued text acknowledgement (no extra roundtrip);
+  blocked chats keep the truthful pause notice; router no longer pre-edits
+  "Processing"; label edits only when the stage string changes.
+- Migration 5: runtime_sessions prepared-briefing memo prevents post-restart
+  re-briefing of prepared sessions; failed briefings are never cached.
+- Artifact safety: deliverables restricted to hasil/ with no-symlink bounded
+  reader; unpredictable multipart boundary; filename header-injection blocked.
+- Poller honors Telegram retry_after with capped backoff; identity check
+  retries transient connection failures without monitor delay.
+- JsonHttpClient Telegram guard: retries only pre-request TCP/TLS failures;
+  once request bytes are written, an ambiguous POST is never replayed.
+- Deliveries carry a media class flag so file uploads cannot hold text replies.
+- Reconciler no longer lets 32 active old receipts starve later completed
+  receipts (cursor with wraparound re-scan).
+
+Verification:
+- Suite 480 tests OK in default and TZ=Asia/Jakarta; compileall clean.
+- Stress harness test/stress_runtime.py: 3 rounds x 1000 messages / 20 chats
+  with duplicate ingress (300) and injected faults — execution_replays=0,
+  duplicate_final_deliveries=0, stale_status_overwrites=0, FIFO held, queue
+  bounds respected, 1000 receipts, quick_check ok, foreign_key_check empty.
+- Fast-path round (no text acks): same invariants, ambiguous send outcomes
+  (34) quarantined as 'uncertain', never replayed.
+- Drain restart via deploy.restart; production DB migrated to [1..5],
+  quick_check ok, foreign_key_check empty; bot online (Unabot, single
+  supervisor + single bridge process).
+- Live bridge-only check (no model): '/status' accepted -> typed and confirmed
+  sent in real Telegram in 1.045 s end-to-end (telegram methods: typing,
+  sendMessage only).
+- Live model latency benchmark deploy/benchmark_chat.py: repeated attempts
+  blocked by provider quota
+  (AI.Error: subscription_sharing_usage_limit_exceeded). RetryLater(900)
+  worked as designed: the probe job deferred in the isolated DB, benchmark
+  reports the delay instead of blind-retrying. Model-path latency check remains
+  pending until the provider quota resets; the bridge fix removed only
+  27–105 ms of before-prompt overhead on warm sessions measured earlier
+  (cold briefing still costs one prompt round-trip by design).
+- Push 013dd5e; CI test workflow success.

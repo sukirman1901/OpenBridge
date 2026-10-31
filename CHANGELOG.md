@@ -5,6 +5,26 @@ All notable changes to OpenBridge are documented here. This project follows the 
 ## [Unreleased]
 
 ### Fixed
+- Reply latency: status/typing/acknowledgement Telegram calls run off the
+  execution thread in a bounded, coalescing presence service. A wire fence
+  prevents stale cosmetic edits from overwriting a final answer, and an
+  ambiguous acknowledgement send is never replayed on the network.
+- Warm replies skip the queued text acknowledgement roundtrip by default;
+  `/jobs` remains the diagnostic view and paused chats keep a truthful notice.
+- Prepared sessions are no longer re-briefed after a restart (durable
+  briefing memo, migration 5); failed briefings are never cached.
+- Polling honors Telegram `retry_after` with capped exponential backoff, and
+  transient identity-check connection failures retry instead of idling.
+- Telegram HTTPS handling explicitly separates TLS setup from request writes:
+  pre-request connection failures retry cheaply, while a written request body
+  is never replayed.
+- Outbound file delivery is isolated from media uploads (`media` delivery
+  class, migration 5), so a slow file upload cannot hold a text reply.
+- Deliverable paths are restricted to `hasil/` with a bounded no-symlink
+  reader; multipart boundaries are unpredictable and filenames cannot inject
+  headers into the upload envelope.
+- The executor reconciler re-scans with a cursor so more than 32 active old
+  receipts cannot starve newer completed receipts.
 - Persist backend submission intent and accepted message IDs per job/run/purpose.
   Recover exact terminal results after restart or disconnect without submitting
   the prompt again. Missing receipts and unverified backend state remain fenced.
