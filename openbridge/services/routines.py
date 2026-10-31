@@ -85,6 +85,14 @@ def parse_creation(text, now=None):
     if not text:
         return None
 
+    tomorrow_schedule = re.search(
+        r"\b(?:jadwal\w*|schedule\w*)\b.*?\b(besok|lusa|tomorrow)\b.*?"
+        r"(?:jam|pukul|at)\s*(\d{1,2})(?:[.:](\d{2}))?", text, re.I)
+    if tomorrow_schedule:
+        days = 2 if tomorrow_schedule.group(1).lower() == 'lusa' else 1
+        clock = f"{int(tomorrow_schedule.group(2)) % 24:02d}:{tomorrow_schedule.group(3) or '00'}"
+        return _once_spec(days, clock, now)
+
     reminder = re.search(
         r"(?:ingetin|ingatkan|remind\w*|alarmin)\s*(?:aku|kami|saya|me)?\s*(besok|lusa)?\s*"
         r"(?:\S+\s+)?(?:jam|pukul|at)\s*(\d{1,2})(?:[.:](\d{2}))?", text, re.I)

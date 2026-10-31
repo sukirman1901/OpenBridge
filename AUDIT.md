@@ -1,5 +1,24 @@
 # Bridge audit
 
+## Natural-language file and schedule regression (2026-10-31)
+
+Read-only inspection of Telegram history showed ordinary requests for a 2027
+Excel planner (jobs 19–21) received unsupported-capability replies. The upload
+pipeline had only been wired to background tasks, not Conversations.answer.
+Ordinary replies now parse file/photo markers into durable outputs using the
+same OutputService, and current capability guidance is injected each turn so
+cached sessions learn the feature without being reset. Authorized direct user
+requests are distinguished from instructions in quoted/attachment content;
+the earlier blanket data-only wording was overly restrictive.
+
+Added a regression for plain-chat Excel requests and one for "buatkan jadwal
+untuk saya besok jam 9". Both failed before implementation. Tomorrow/lusa
+schedule phrases with a specified time now persist as one-shots, not daily cron.
+Missing times must still be clarified. Full suite: 418 tests pass. Model-backed
+Excel creation is not claimed live-tested here; tests cover the actual assembled
+chat-to-durable-file path. Job 23 was observed interrupted and is not replayed
+or reconciled automatically.
+
 ## Follow-up: checkpoint status leak (2026-10-31)
 
 Owner's job #17 reproduced a missed path: bootstrap.checkpoint still edited

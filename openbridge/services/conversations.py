@@ -6,6 +6,7 @@ import uuid
 from openbridge.domain.messages import ConversationKey
 from openbridge.domain.errors import RetryLater, TaskFailed
 from openbridge.services.briefing import conversation_briefing
+from openbridge.services.background import parse_file_outputs
 from openbridge.services.sessions import ConversationSessions, BackgroundSessions
 from openbridge.services.untrusted import framed
 from runtime_policy import bot_id
@@ -21,11 +22,12 @@ def session_key(bot, chat_id, persona, mode="grup"):
 
 class Conversations:
     def __init__(self, home, config, backend, runtime, personas, approvals, context, meter, rate, send, checkpoint, log,
-                 memories=None):
+                 memories=None, send_file=None):
         self.home, self.config, self.backend, self.runtime = home, config, backend, runtime
         self.personas, self.approvals, self.context, self.meter, self.rate = personas, approvals, context, meter, rate
         self.send, self.checkpoint, self.log = send, checkpoint, log
         self.memories = memories
+        self.send_file = send_file
         self.sessions, self.turns = {}, {}
         self.lock = threading.Lock()
 
@@ -83,9 +85,27 @@ class Conversations:
         sid = self.get(bot, chat_id)
         self.checkpoint(sid)
         context = self.context.format_context(chat_id, self.config.get("trigger", {}).get("konteks_n", 15))
-        answer = self.backend.run_prompt(sid, f"[Recent conversation context]:\n{context}\n\n{framed('MESSAGE', sender, text)}")
+        capabilities = (
+            "[Current bridge capabilities — applies to this turn, including existing sessions]\n"
+            "You can act on the owner's direct requests in ordinary language. No slash command is required. "
+            "Create requested deliverables with your tools under hasil/, verify they exist, then send them "
+            "by ending your answer with a separate line: @file hasil/name.ext optional caption. "
+            "For an image use @photo hasil/name.png optional caption. The bridge uploads these files to Telegram; "
+            "you do not need a separate Telegram tool. Do not claim files are unavailable without trying. "
+            "Never fabricate an artifact or claim delivery succeeded before it is confirmed. "
+            "Respect approval decisions; if denied, explain the block rather than bypassing it. "
+            "Scheduling is available in ordinary chat; ask for a missing time instead of claiming a reminder exists.\n"
+        )
+        answer = self.backend.run_prompt(sid, capabilities + f"[Recent conversation context]:\n{context}\n\n{framed('MESSAGE', sender, text)}")
         self.context.append(chat_id, "bot", answer, name=bot["nama"])
-        self.send(bot, chat_id, answer)
+        if self.send_file:
+            cleaned, files = parse_file_outputs(answer)
+            if cleaned.strip():
+                self.send(bot, chat_id, cleaned)
+            for item in files:
+                self.send_file(identity, chat_id, item['path'], item['caption'], item['operation'])
+        else:
+            self.send(bot, chat_id, answer)
         self.meter.extract_and_record(identity, self.backend.session_info(sid))
         key = conversation_key(bot, chat_id)
         self.turns[key] = self.turns.get(key, 0) + 1

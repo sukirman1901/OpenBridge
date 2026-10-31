@@ -5,6 +5,11 @@ All notable changes to OpenBridge are documented here. This project follows the 
 ## [Unreleased]
 
 ### Fixed
+- Plain-language chat requests can now hand off files through the same durable
+  upload pipeline as background tasks. Capability guidance refreshes existing
+  sessions each turn; slash commands are not required.
+- Tomorrow/lusa scheduling phrases with a time are recognized as one-shot
+  schedules, including "buatkan jadwal untuk saya besok jam 9".
 - Ordinary Telegram replies show a simple Processing status instead of internal
   job numbers; `/jobs` remains available for diagnostics.
 - Typing is established before model work and is not shown for unaddressed
