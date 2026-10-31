@@ -138,7 +138,7 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
                 bot = resolve(job["account_id"])
                 if bot:
                     call(bot["token"], "editMessageText", {"chat_id": job["conversation_id"],
-                        "message_id": job["status_message_id"], "text": f"⚙️ Job #{job['id']} is processing.",
+                        "message_id": job["status_message_id"], "text": "⚙️ Processing…",
                         "reply_markup": {"inline_keyboard": [[{"text": "Stop", "callback_data": f"st-{sid}"}]]}}, timeout=5)
         conversations = Conversations(home, config, backend, runtime, personas, approvals, context, meter, rate, send, checkpoint, log,
                                       memories=lambda identity, chat: store.list_memories(identity, chat))

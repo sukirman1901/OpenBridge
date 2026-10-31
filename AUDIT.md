@@ -1,5 +1,13 @@
 # Bridge audit
 
+## Follow-up: checkpoint status leak (2026-10-31)
+
+Owner's job #17 reproduced a missed path: bootstrap.checkpoint still edited
+the status message with a job number after the router had simplified it.
+Job #17 itself succeeded and its final edit was recorded sent. Changed the
+checkpoint text to Processing and added a fully assembled ingress/execution
+regression test. The test failed on the old checkpoint string before the fix.
+
 ## Telegram UX re-audit and historical corrections (2026-10-31)
 
 - The earlier statement that typing never existed was incorrect. `git log -S
