@@ -26,6 +26,8 @@ All notable changes to OpenBridge are documented here. This project follows the 
   ownership guards before any item op.
 - 25 new tests (`test/test_routines.py`); full suite is now 366 passing.
 
+## [0.4.0] - 2026-10-31 — Autonomy hardening (memory, files, guards)
+
 ### Added
 - **Cancel queued jobs**: `/cancel <id>` in the owner's private chat (and a
   Cancel button on `/job <id>`) cancels durable work that has not started
