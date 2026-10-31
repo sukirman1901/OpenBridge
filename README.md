@@ -30,30 +30,103 @@ existing configuration and data remain compatible.
 | `context_buffer.py` | Conversation context buffer |
 | `approval_relay.py`, `runtime_policy.py` | Owner approvals and access checks |
 
-## Run
+## Quick start (install in one line)
 
 ```bash
-# 1. Create a bot with BotFather. Save its token privately in bot-1.token.
-#    Use mode 0600. Do not put credentials in shell history or chat.
-
-# 2. Configure config.json with a bots array and explicit owner_ids.
-#    Each bot: "token": "{file:bot-1.token}", "nama": "Una", "persona": "..."
-#    Also include "trigger": {} for a minimal setup.
-
-# 3. Start the OpenCode service, then (one-time per container boot):
-./supervise.sh &   # detached supervision; keeps the bridge alive across crashes
-# Later, ordinary operator commands:
-./stop.sh          # scoped SIGTERM shutdown; supervision stops with it
+curl -fsSL https://raw.githubusercontent.com/sukirman1901/OpenBridge/main/install.sh | sh
 ```
 
-`start.sh` alone is a foreground process protected by a single-poller lock.
+This downloads the project into `~/OpenBridge` and runs the interactive
+wizard, which asks three questions and writes a safe `config.json`:
+
+1. **Bot name** — how your bot is displayed in Telegram (e.g. `Una`).
+2. **Bot token** — create a bot first with [@BotFather](https://t.me/BotFather)
+   (`/newbot`, then copy the token that looks like `123456789:AAAA…`).
+3. **Your Telegram user id** — message [@userinfobot](https://t.me/userinfobot)
+   to get it. This id becomes the **owner**: only you get job controls,
+   approvals, and management commands.
+
+The wizard saves the token to a private `<name>.token` file (mode 0600) and
+references it from `config.json`, so credentials never sit in the config
+itself.
+
+Prefer manual setup? Clone the repo, then run `python3 wizard.py` yourself, or
+copy [`deploy/config.example.json`](deploy/config.example.json) to
+`config.json` and fill it in:
+
+```json
+{
+  "bots": [
+    {
+      "nama": "Una",
+      "persona": "You are Una, a helpful daily assistant.",
+      "token": "{file:una.token}"
+    }
+  ],
+  "owner_ids": [123456789],
+  "trigger": {},
+  "runtime": { "interactive_workers": 1, "background_workers": 1 },
+  "retention": { "days": 30 }
+}
+```
+
+Beyond the wizard's minimum you can tune: `budget.max_call_per_hari` /
+`max_cost_hari` (daily OpenCode budget), `rate_limiter.max_per_menit` (per-chat
+throttle), `trigger.cooldown_detik` / `max_char_reply` (reply etiquette), and
+`retention.days` (1–365; terminal jobs older than this are pruned).
+
+## Prerequisites
+
+- **Python ≥ 3.10** — standard library only, nothing to `pip install`.
+- **[OpenCode](https://opencode.ai) installed and running** — the bridge talks
+  to a local `opencode serve` (discovered via
+  `~/.local/state/opencode/service.json`). Set `OPENBRIDGE_SERVICE_JSON` to
+  point at a server on another host/port.
+- **A Telegram bot token** from @BotFather.
+
+## Start the bridge
+
+```bash
+./supervise.sh &   # detached supervision (recommended)
+```
+
+or `./start.sh` for a foreground run protected by a single-poller lock.
 `supervise.sh` adds automatic recovery on hosts without an init system
 (Termux/proot containers): abnormal exit restarts with exponential backoff
 (5 s → 5 min cap, reset after 30 min of stability); a clean exit ends
-supervision, so a deliberate `./stop.sh` is never fought over. `deploy/`
-contains a systemd unit for hosts that do run systemd; this environment does
-not. `OPENBRIDGE_HOME` optionally selects configuration/state;
-`OPENBRIDGE_SERVICE_JSON` optionally selects the OpenCode service registration.
+supervision, so a deliberate `./stop.sh` is never fought over. Later operator
+commands:
+
+```bash
+./stop.sh          # scoped SIGTERM shutdown; supervision stops with it
+```
+
+`deploy/` contains a systemd unit for hosts that do run systemd.
+`OPENBRIDGE_HOME` optionally selects configuration/state.
+
+## Use the bot
+
+Open a private Telegram chat with your bot and just talk to it — it replies
+through the OpenCode agent. In group chats it stays **silent by default** and
+only answers when addressed or replied to. The owner gets extra powers in
+their private chat with the bot:
+
+| Command | What it does |
+|---|---|
+| `/help` | 📖 Command menu |
+| `/model` / `/agent` | 🧠 Swap the OpenCode model / agent |
+| `/persona` | 👥 View/manage bot personas |
+| `/jadwal` | ⏰ Automatic schedules (cron + one-shot reminders, UTC+7) |
+| `/tugas <goal>` | 📋 Hand off and track an autonomous task |
+| `/status` | 📊 Bot status (uptime, budget, queues) |
+| `/jobs`, `/job <id>` | 📋 Durable job and delivery status |
+| `/result <id>` | 📄 Retrieve a saved job result without re-executing |
+| `/resolve <id>` | 🔎 Reconcile an interrupted job after a crash |
+| `/new`, `/reset` | ♻️ Fresh context / wipe memory |
+
+Everything a job does persists in SQLite first: send survives restarts,
+ambiguous sends are quarantined instead of duplicated, and nothing replays
+silently after a crash — you decide via `/resolve`.
 
 ## Security and limitations
 
