@@ -6,6 +6,17 @@ from openbridge.domain.errors import ExecutionUncertain, RetryLater
 
 
 class TestOpenCodeCompletion(unittest.TestCase):
+    def test_string_message_content_does_not_break_completion(self):
+        # Producers may emit plain-string content; it must never crash completion.
+        plain = self.messages()
+        for message in plain['data']:
+            if message.get('content'):
+                message['content'] = 'plain'
+        client = self.client([plain, plain, plain, plain])
+        # Contents that are not text parts provide no answer; the receipt must
+        # stay uncertain (RuntimeError) rather than crash or fake a success.
+        with self.assertRaises(RuntimeError):
+            client.run_prompt('session', 'hello')
     def test_usage_is_for_this_receipt_not_cumulative_session_cost(self):
         history = self.messages()
         history['data'][1].update(cost=.2, tokens={'input': 3, 'output': 2})

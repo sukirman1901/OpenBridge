@@ -729,3 +729,29 @@ Verification:
   27–105 ms of before-prompt overhead on warm sessions measured earlier
   (cold briefing still costs one prompt round-trip by design).
 - Push 013dd5e; CI test workflow success.
+
+## ✅ Provider recovery + parser hardening (19:2x UTC+7, 2026-10-31)
+
+The bounded quota watcher (probe every 10 min, 3 h window) confirmed the
+runtime limit lifted and exposed a real parser bug: a producer emitting
+plain-string message `content` crashed completion parsing with
+`AttributeError: 'str' object has no attribute 'get'`, breaking the exact
+receipt lookup. TDD red test in test_opencode_completion.py; fixed by a
+`parts()` helper (list-only content) for tool detection and answer extraction.
+A non-list content now degrades to "no text answer" (RuntimeError, receipt
+stays unfaked), never a crash. Suite 481 OK (default + WIB).
+
+Live model path benchmark (isolated sessions, real Telegram, provider back):
+- cold: 7.9 s end-to-end (queue 0.018 s; before-prompt 3.7 s = one
+  briefing round-trip; backend 2.9 s; one typing attempt failed with a
+  connection reset — off-thread cosmetic only)
+- warm: 5.1 s end-to-end, before-prompt 0.018 s, 0 briefing, 1 delivery
+- after_restart: 5.3 s, before-prompt 0.068 s, 0 briefing calls (durable
+  prepared-briefing memo works), 1 delivery
+No editMessageText races; no Markdown retry attempts.
+
+Production recovery verified from the deployed bridge (restart 15:52):
+jobs 41–43 deferred by the quota pause retried automatically once the limit
+lifted (18:53), all settled `succeeded`, deliveries confirmed sent
+(attempts 1–2, text class), no replays. Job 41's repeated briefing receipts
+document honest RetryLater(900) cycles; none was silently replayed.

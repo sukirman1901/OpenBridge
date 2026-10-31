@@ -157,14 +157,19 @@ class OpenCodeClient:
             if message.get('type') in ('user', 'compaction'):
                 break  # A later user's result never belongs to this receipt.
             fresh.append(message)
+
+        def parts(message):
+            content = message.get('content')
+            return content if isinstance(content, list) else []
+
         tools_used = any(m.get('finish') == 'tool-calls' or
-                         any(p.get('type') == 'tool' for p in m.get('content', [])) for m in fresh)
+                         any(p.get('type') == 'tool' for p in parts(m)) for m in fresh)
         terminal = next((i for i, m in enumerate(fresh) if m.get('type') == 'idle'), None)
         if terminal is not None:
             outcome = fresh[terminal].get('outcome')
             if outcome not in ('succeeded', 'failed', 'interrupted', 'cancelled'):
                 return None
-            answers = [' '.join(p.get('text', '') for p in m.get('content', []) if p.get('type') == 'text').strip()
+            answers = [' '.join(p.get('text', '') for p in parts(m) if p.get('type') == 'text').strip()
                        for m in fresh[:terminal] if m.get('type') == 'assistant' and m.get('finish') != 'tool-calls']
             assistants = [m for m in fresh[:terminal] if m.get('type') == 'assistant']
             cost, tokens = 0, 0
