@@ -7,6 +7,7 @@ from openbridge.domain.messages import ConversationKey
 from openbridge.domain.errors import RetryLater, TaskFailed
 from openbridge.services.briefing import conversation_briefing
 from openbridge.services.sessions import ConversationSessions, BackgroundSessions
+from openbridge.services.untrusted import framed
 from runtime_policy import bot_id
 
 
@@ -82,7 +83,7 @@ class Conversations:
         sid = self.get(bot, chat_id)
         self.checkpoint(sid)
         context = self.context.format_context(chat_id, self.config.get("trigger", {}).get("konteks_n", 15))
-        answer = self.backend.run_prompt(sid, f"[Recent conversation context]:\n{context}\n\n[Message from {sender}]: {text}")
+        answer = self.backend.run_prompt(sid, f"[Recent conversation context]:\n{context}\n\n{framed('MESSAGE', sender, text)}")
         self.context.append(chat_id, "bot", answer, name=bot["nama"])
         self.send(bot, chat_id, answer)
         self.meter.extract_and_record(identity, self.backend.session_info(sid))

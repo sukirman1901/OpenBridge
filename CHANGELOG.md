@@ -41,6 +41,11 @@ All notable changes to OpenBridge are documented here. This project follows the 
   becomes a durable `document`/`photo` delivery uploaded via Telegram
   sendDocument/sendPhoto. Paths are resolved strictly inside the bridge home
   and must exist, so an agent cannot exfiltrate anything else.
+- **Untrusted-content markers**: user messages and attachments reach the agent
+  wrapped in `⟦UNTRUSTED ... ⟧ ... ⟦/UNTRUSTED⟧` markers with an explicit
+  source and a data-not-directives note; embedded marker tokens inside user
+  text are neutralized so injection cannot fake the closing marker. The
+  briefing states the rule once, globally.
 
 ### Fixed
 - **One-shot anchors are timezone-proof**: stored one-shot expressions are

@@ -2,6 +2,7 @@
 import threading
 
 from runtime_policy import bot_id
+from openbridge.services.untrusted import framed
 from openbridge.adapters.channels.telegram import TelegramAdapter
 from openbridge.adapters.channels.telegram.polling import TelegramPoller
 from openbridge.services.conversations import conversation_key
@@ -66,8 +67,8 @@ class TelegramGateway:
         text, sender = incoming.text, (message.get("from") or {}).get("first_name") or "anon"
         attachment, local = self.media.receive(bot, message)  # Always after current-policy authorization.
         if attachment:
-            text = (f"{text}\n\n[ATTACHMENT received from {sender}: {attachment}. "
-                    "Read its content if needed. Images require vision support; video/audio cannot be heard or watched.]").strip()
+            text = (f"{text}\n\n" + framed("ATTACHMENT", sender, attachment)
+                    + "\nImages require vision support; video/audio cannot be heard or watched.").strip()
         if not text:
             return
         chat_id = chat["id"]

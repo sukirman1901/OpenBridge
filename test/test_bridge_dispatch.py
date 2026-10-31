@@ -40,10 +40,10 @@ class TestBridgeDispatch(unittest.TestCase):
         while components.runtime.deliver_one():
             pass
         self.assertEqual(len(prompts), 2)
-        self.assertIn("[Message from Owner]: first", prompts[0])
+        self.assertIn("⟦UNTRUSTED MESSAGE FROM Owner⟧\nfirst", prompts[0])
         self.assertNotIn("second", prompts[0])
         self.assertIn("answer-1", prompts[1])
-        self.assertIn("[Message from Owner]: second", prompts[1])
+        self.assertIn("⟦UNTRUSTED MESSAGE FROM Owner⟧\nsecond", prompts[1])
         self.assertEqual(sent, ["answer-1", "answer-2"])
 
     def test_session_identity_includes_account_and_execution_mode(self):

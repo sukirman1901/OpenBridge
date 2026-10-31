@@ -461,3 +461,19 @@ Live E2E: a document delivery for `hasil/tes-file-terkirim.txt` (caption
 Telegram. Test stub rows (inbox 999900, job 999901, delivery 11) were deleted
 afterwards; foreign keys clean, succeeded jobs back to 8, test file removed.
 Reload healthy at 07:48 (single supervisor/poller, bot online offset 19758732).
+
+## ✅ Batch 5 — untrusted-content markers (07:5x UTC+7)
+
+User messages and attachments now reach the agent wrapped as
+`⟦UNTRUSTED MESSAGE FROM <sender>⟧ … ⟦/UNTRUSTED⟧` (attachments:
+`⟦UNTRUSTED ATTACHMENT FROM <sender>⟧`) with a fixed data-not-directives note.
+`framed()` neutralizes marker tokens embedded in user text, so spoofing the
+closing marker is impossible. Routing is untouched: commands and schedules
+still match on the raw text; the framing happens at prompt-build time. The
+briefing teaches the rule once, globally.
+
+TDD: test_untrusted.py (3 tests) written first (framing shape, marker
+neutralization, answer-prompt integration); one legasi assertion in
+test_bridge_dispatch was updated to the new prompt shape, the rest untouched.
+Suite 406 OK; compileall clean. Reload healthy (getMe @Openuna_bot,
+OpenCode 2.2.4, quick_check ok, fk clean, succeeded jobs 8).
