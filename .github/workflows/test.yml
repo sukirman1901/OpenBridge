@@ -19,6 +19,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run unit tests
         run: python -m unittest discover -s test -t . -v
+      - name: Fault-injection recovery gates (no live credentials)
+        run: python -m unittest test.test_runtime_faults test.test_execution_recovery test.test_execution_events test.test_safe_restart -v
       - name: Run tests again in TZ=Asia/Jakarta (storage is UTC; hosts are not)
         env:
           TZ: Asia/Jakarta

@@ -5,6 +5,16 @@ All notable changes to OpenBridge are documented here. This project follows the 
 ## [Unreleased]
 
 ### Fixed
+- Persist backend submission intent and accepted message IDs per job/run/purpose.
+  Recover exact terminal results after restart or disconnect without submitting
+  the prompt again. Missing receipts and unverified backend state remain fenced.
+- Use reconnectable SSE hints with HTTP-history fallback, distinct bounded
+  approval/execution budgets, and truthful waiting-approval/reconnecting statuses.
+- Treat V2 compaction as asynchronous work with its own persisted receipt;
+  `/new` no longer races a queued compaction against a new prompt.
+- Add drain-before-restart and opt-in live recovery smoke commands under deploy/.
+- Never quota-retry a prompt that already invoked tools; render file results
+  safely in `/result` instead of raising a missing-text error.
 - Ordinary tool-using chat requests have a 15-minute execution budget rather
   than timing out before the five-minute owner-approval window can finish.
 - Verified late backend results can be settled by an operator and delivered

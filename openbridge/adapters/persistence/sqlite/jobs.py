@@ -78,6 +78,17 @@ CREATE INDEX runtime_jobs_lane_queue ON runtime_jobs(channel,account_id,conversa
 CREATE INDEX runtime_jobs_lane_pending ON runtime_jobs(status,lane,id);
 """
 
+MIGRATION_4 = """
+CREATE TABLE runtime_prompts (
+    id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL REFERENCES runtime_jobs(id),
+    run_id INTEGER NOT NULL REFERENCES runtime_runs(id),
+    session_id TEXT NOT NULL, message_id TEXT UNIQUE, purpose TEXT NOT NULL,
+    step INTEGER, stage TEXT NOT NULL DEFAULT 'submitting',
+    created_at REAL NOT NULL, updated_at REAL NOT NULL
+);
+CREATE INDEX runtime_prompts_job ON runtime_prompts(job_id,id);
+"""
+
 
 class JobStore:
     def __init__(self, path=":memory:", clock=time.time):
@@ -93,7 +104,7 @@ class JobStore:
             self.db.execute("CREATE TABLE IF NOT EXISTS runtime_migrations "
                             "(version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)")
             versions = [r[0] for r in self.db.execute("SELECT version FROM runtime_migrations")]
-            if any(version > 3 for version in versions):
+            if any(version > 4 for version in versions):
                 raise RuntimeError("Runtime database requires a newer OpenBridge")
             if 1 not in versions:
                 for statement in MIGRATION_1.split(";"):
@@ -110,6 +121,11 @@ class JobStore:
                     if statement.strip():
                         self.db.execute(statement)
                 self.db.execute("INSERT INTO runtime_migrations VALUES(3, ?)", (clock(),))
+            if 4 not in versions:
+                for statement in MIGRATION_4.split(';'):
+                    if statement.strip():
+                        self.db.execute(statement)
+                self.db.execute("INSERT INTO runtime_migrations VALUES(4, ?)", (clock(),))
 
     @contextmanager
     def transaction(self):
@@ -126,6 +142,43 @@ class JobStore:
     def close(self):
         with self.lock:
             self.db.close()
+
+    def begin_prompt(self, job_id, session_id, purpose, step=None):
+        """Persist submission intent before POST; a missing receipt stays ambiguous."""
+        now = self.clock()
+        with self.transaction():
+            run = self.db.execute("SELECT id FROM runtime_runs WHERE job_id=? AND status='running' "
+                                  "ORDER BY id DESC LIMIT 1", (job_id,)).fetchone()
+            job = self.get(job_id)
+            if not run or not job or job['status'] != 'running':
+                raise RuntimeError('Prompt submission requires a running job')
+            return self.db.execute("INSERT INTO runtime_prompts(job_id,run_id,session_id,purpose,step,created_at,updated_at) "
+                                   "VALUES(?,?,?,?,?,?,?)",
+                                   (job_id, run[0], session_id, purpose, step, now, now)).lastrowid
+
+    def accept_prompt(self, prompt_id, message_id):
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError('Accepted prompt requires a message ID')
+        with self.transaction():
+            cur = self.db.execute("UPDATE runtime_prompts SET message_id=?,stage='working',updated_at=? "
+                                  "WHERE id=? AND message_id IS NULL", (message_id, self.clock(), prompt_id))
+            if not cur.rowcount:
+                raise RuntimeError('Prompt receipt was already assigned')
+
+    def prompt_stage(self, prompt_id, stage):
+        if stage not in ('working', 'waiting_approval', 'checking_backend', 'succeeded', 'failed'):
+            raise ValueError('Invalid prompt stage')
+        with self.transaction():
+            self.db.execute('UPDATE runtime_prompts SET stage=?,updated_at=? WHERE id=?',
+                            (stage, self.clock(), prompt_id))
+
+    def interrupted_prompts(self, limit=32):
+        with self.lock:
+            return [dict(row) for row in self.db.execute(
+                "SELECT p.*,j.kind,j.channel,j.account_id,j.conversation_id,j.inbox_id "
+                "FROM runtime_prompts p JOIN runtime_jobs j ON j.id=p.job_id "
+                "WHERE j.status='interrupted' AND p.id=(SELECT MAX(q.id) FROM runtime_prompts q WHERE q.job_id=j.id) "
+                "AND p.message_id IS NOT NULL ORDER BY p.updated_at,p.id LIMIT ?", (limit,))]
 
     def task_time(self):
         return datetime.fromtimestamp(self.clock(), timezone(timedelta(hours=7))).strftime("%Y-%m-%d %H:%M:%S")
@@ -428,7 +481,8 @@ class JobStore:
                                 ("pending" if operation == "edit" else "uncertain", row["id"]))
         return interrupted
 
-    def reconcile_completed(self, job_id, outputs):
+    def reconcile_completed(self, job_id, outputs, *, status='succeeded', error=None, prompt_id=None,
+                            step_answer=None):
         """Operator-only settlement after verifying a late terminal backend result.
 
         The caller must verify session inactivity, an empty inbox, and correlate
@@ -437,15 +491,37 @@ class JobStore:
         sequence so an already-sent review notice can be replaced durably.
         """
         now = self.clock()
+        if status not in ('succeeded', 'failed'):
+            raise ValueError('Invalid reconciliation outcome')
         with self.transaction():
             job = self.get(job_id)
             if not job or job['status'] != 'interrupted':
                 return False
-            self.db.execute("UPDATE runtime_jobs SET status='succeeded',result=?,error=NULL,updated_at=? WHERE id=?",
-                            (json.dumps(outputs, ensure_ascii=False), now, job_id))
-            self.db.execute("UPDATE runtime_runs SET status='succeeded',error=NULL,finished_at=? "
-                            "WHERE job_id=? AND status='interrupted'", (now, job_id))
-            self._project_task(job, 'succeeded', outputs, None)
+            if prompt_id is not None:
+                latest = self.db.execute('SELECT * FROM runtime_prompts WHERE job_id=? ORDER BY id DESC LIMIT 1',
+                                         (job_id,)).fetchone()
+                if not latest or latest['id'] != prompt_id or not latest['message_id']:
+                    return False
+                if job['kind'] == 'task' and latest['purpose'] == 'task_step' and step_answer is not None:
+                    step = latest['step']
+                    completed = self.completed_steps(job_id)
+                    if step is None or step > len(completed):
+                        return False
+                    if step == len(completed):
+                        self.db.execute('INSERT INTO runtime_steps VALUES(?,?,?,?)',
+                                        (job_id, step, step_answer, now))
+                        self.db.execute('UPDATE tasks SET steps=?,updated_at=? WHERE id=?',
+                                        (step + 1, self.task_time(), json.loads(job['payload'])['task_id']))
+                    elif completed[step]['answer'] != step_answer:
+                        return False
+            self.db.execute("UPDATE runtime_jobs SET status=?,result=?,error=?,updated_at=? WHERE id=?",
+                            (status, json.dumps(outputs, ensure_ascii=False), error, now, job_id))
+            self.db.execute("UPDATE runtime_runs SET status=?,error=?,finished_at=? "
+                            "WHERE job_id=? AND status='interrupted'", (status, error, now, job_id))
+            if prompt_id is not None:
+                self.db.execute('UPDATE runtime_prompts SET stage=?,updated_at=? WHERE id=?',
+                                (status, now, prompt_id))
+            self._project_task(job, status, outputs, error)
             sequence = self.db.execute("SELECT COALESCE(MAX(sequence),-1)+1 FROM runtime_deliveries WHERE job_id=?",
                                        (job_id,)).fetchone()[0]
             for index, output in enumerate(outputs):
@@ -491,6 +567,7 @@ class JobStore:
                 (cutoff, limit)).fetchall()
             for job_id, inbox_id in rows:
                 for statement, arguments in (
+                    ("DELETE FROM runtime_prompts WHERE job_id=?", (job_id,)),
                     ("DELETE FROM runtime_steps WHERE job_id=?", (job_id,)),
                     ("DELETE FROM runtime_runs WHERE job_id=?", (job_id,)),
                     ("DELETE FROM runtime_deliveries WHERE job_id=?", (job_id,)),

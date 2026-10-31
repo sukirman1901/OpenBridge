@@ -10,7 +10,8 @@ from openbridge.runtime.dispatcher import QueueFull
 
 
 class DurableRuntime:
-    def __init__(self, store, dispatcher, execute, deliver, log, background_dispatcher=None):
+    def __init__(self, store, dispatcher, execute, deliver, log, background_dispatcher=None,
+                 drain_requested=None, progress=None):
         self.store = store
         self.dispatcher = dispatcher
         self.background_dispatcher = background_dispatcher if background_dispatcher is not None else dispatcher
@@ -22,6 +23,36 @@ class DurableRuntime:
         self.scheduled = set()
         self.lock = threading.Lock()
         self.threads = []
+        self.drain_requested = drain_requested or (lambda: False)
+        self.progress = progress
+
+    def run_prompt(self, backend, sid, text, timeout=120, purpose='reply'):
+        """Track intent and accepted message IDs before waiting for backend work."""
+        job = self.current_job()
+        operation = backend.compact_session if purpose == 'compaction' else backend.run_prompt
+        args = (sid,) if purpose == 'compaction' else (sid, text)
+        if not job:
+            return operation(*args, timeout=timeout)
+        step = len(self.store.completed_steps(job['id'])) if purpose == 'task_step' else None
+        receipt = self.store.begin_prompt(job['id'], sid, purpose, step)
+        stage = None
+        def state(value):
+            nonlocal stage
+            if value != stage:
+                try:
+                    self.store.prompt_stage(receipt, value)
+                except Exception as error:
+                    raise ExecutionUncertain('Execution progress could not be persisted') from error
+                stage = value
+                if self.progress:
+                    try:
+                        self.progress(job, sid, value)
+                    except Exception:
+                        pass  # Cosmetic Telegram failures cannot invalidate a receipt.
+        answer = operation(*args, timeout=timeout,
+            on_accepted=lambda mid: self.store.accept_prompt(receipt, mid), on_state=state)
+        state('succeeded')
+        return answer
 
     def current_job(self):
         return getattr(self.local, "job", None)
@@ -40,7 +71,7 @@ class DurableRuntime:
 
     def run(self, job_id):
         with self.lock:
-            if self.stopped.is_set():
+            if self.stopped.is_set() or self.drain_requested():
                 return  # Accepted work remains durable for the next startup.
             job = self.store.claim(job_id)
         if job is None:
@@ -70,6 +101,8 @@ class DurableRuntime:
         self.store.finish(job_id, outputs, status, error)
 
     def pump(self):
+        if self.drain_requested():
+            return
         # Each lane gets its own query window. A large background backlog cannot
         # hide a newer chat job beyond a shared SQL LIMIT.
         for lane in LANES:
@@ -108,6 +141,8 @@ class DurableRuntime:
             future.add_done_callback(completed)
 
     def deliver_one(self):
+        if self.drain_requested():
+            return False
         delivery = self.store.claim_delivery()
         if delivery is None:
             return False

@@ -28,3 +28,4 @@ memori/
 __pycache__/
 *.pyc
 .derby/
+bridge.drain

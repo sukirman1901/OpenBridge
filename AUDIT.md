@@ -1,5 +1,66 @@
 # Bridge audit
 
+## Durable execution tracking and automatic late-result reconciliation (2026-10-31)
+
+Implemented the structural follow-up rather than another timeout-only patch:
+
+- Migration 4 adds runtime_prompts: job/run/session, purpose/step, submission
+  intent, exact accepted message ID, stage and timestamps. Intent is committed
+  before POST; acceptance is committed before reading results. Receipt-write
+  failure remains ambiguous, not replayable. Retention deletes prompt records
+  before their referenced runs. Older binaries must not open migration-4 DBs.
+- All ordinary replies, background task steps, briefing/handoff prompts, and
+  periodic compaction use tracking. V2 compaction is asynchronous admission:
+  it now waits for its exact compaction receipt and verified inactive session.
+  /new no longer starts unnecessary compaction immediately before its handoff.
+- The reconciliation loop only inspects interrupted jobs with the latest exact
+  receipt. It reads that receipt's terminal segment (never another user's reply),
+  verifies inactivity/empty inbox before and after lookup, and atomically settles
+  the job plus new durable deliveries. It does not call run_prompt/submit_prompt.
+  Missing receipt, nonterminal result or unknown/active backend keeps the fence.
+  Briefing completion is not mistaken for a user answer; incomplete task steps
+  are saved and marked incomplete rather than rerunning remaining work.
+- SSE reconnects and wakes result checks; HTTP history remains authoritative and
+  is polled if SSE drops. Text/reasoning/tool payloads are not retained by the
+  event watcher. Registered approval routes are restored during reconciliation.
+- Execution and approval waiting use separate bounded budgets (900s work + up
+  to 300s approval for ordinary replies), with working/waiting-approval/checking
+  stages. Transient result-lookup failures retry GET only. Quota after tool work
+  is not automatically replayed. /result now handles file outputs without KeyError.
+- deploy.restart uses an exclusive bridge.drain marker to stop new execution
+  and delivery claims, wait for active operations, then stop/restart cleanly.
+  Drain timeout does NOT kill active work. The marker is not a security boundary;
+  immediate external SIGKILL still relies on receipt-based restart recovery.
+
+Validation: 450 tests pass in both default and TZ=Asia/Jakarta environments;
+compileall and diff whitespace checks clean. Added deterministic real-local-HTTP
+fault injection for disconnect/reopen/late result with exactly one POST, tests
+for missing receipts, wrong user correlation, pending approvals, failures,
+partial tasks, SSE reconnect, idempotent settlement, and drain refusal. CI has
+an explicit no-credentials fault-injection gate in addition to the full matrix.
+
+Live smoke: python3 -m deploy.smoke_runtime --telegram used an isolated backend
+session with every tool denied and a separate temporary DB. Forced local timeout,
+reopened DB, recovered RUNTIME_RECOVERY_OK with exactly ONE prompt POST, observed
+five owned-session events, and Telegram confirmed one test notice. No production
+inbox row was injected and no user-session prompt was replayed.
+
+Deployment: SQLite backup saved privately under /tmp/opencode before migration.
+No jobs/deliveries were actively executing at handover. Restart helper completed;
+migrations now 1/2/3/4, quick_check=ok, foreign_key_check empty, single bridge.
+Legacy job 36 (/new, created before receipts) was separately inspected: the only
+backend work since its run start was a completed compaction followed by successful
+idle, no accepted user prompt, session inactive and inbox empty. Explicit operator
+settlement marked that old /new failed (not replayed) and delivered a truthful
+notice. Job 37 then succeeded and delivered; production receipts recorded its
+briefing and reply IDs as separate succeeded operations. No automatic guessing
+was enabled for old jobs without receipts.
+
+Limits: genuinely unreceipted submissions/unknown backend state still require
+review. This is execution-state SSE, not Telegram token-by-token text streaming.
+External Yahoo 429, missing dependencies, or denied approvals remain legitimate
+task failures, not reasons to repeat tool execution automatically.
+
 ## Late tool result after interactive timeout (2026-10-31)
 
 Job 32 timed out in the bridge's default 120-second interactive window while

@@ -19,6 +19,7 @@ from openbridge.config import Paths, load_config, load_registration, Configurati
 from openbridge.infrastructure.logging import FileLogger
 from openbridge.adapters.http import JsonHttpClient
 from openbridge.adapters.execution.opencode import OpenCodeClient
+from openbridge.adapters.execution.opencode.events import SessionEvents
 from openbridge.adapters.persistence.sqlite import JobStore
 from openbridge.adapters.channels.telegram import TelegramClient
 from openbridge.adapters.channels.telegram.delivery import TelegramDelivery
@@ -37,6 +38,7 @@ from openbridge.services.provisioning import Provisioning
 from openbridge.services.conversations import Conversations
 from openbridge.services.triggers import BackgroundProducer
 from openbridge.services.router import JobRouter
+from openbridge.services.reconciliation import ExecutionReconciler
 
 
 @dataclass
@@ -92,6 +94,10 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
     if backend is None:
         url, auth = load_registration(configuration.paths.service)
         backend = OpenCodeClient(url, auth, transport)
+    events = None
+    if isinstance(backend, OpenCodeClient):
+        events = SessionEvents(backend.url, backend.auth, log)
+        backend.events = events
     call = channel_call or TelegramClient(transport).call
     with ExitStack() as resources:
         store = Store(home / "groupbot.db")
@@ -113,7 +119,9 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
         # Lazy callbacks break construction cycles; no callbacks run until the
         # fully assembled application explicitly starts.
         runtime = DurableRuntime(jobs, workers["interactive"], lambda job, payload: router.execute(job, payload),
-                                 lambda item: delivery.deliver(item), log, background_dispatcher=workers["background"])
+                                 lambda item: delivery.deliver(item), log, background_dispatcher=workers["background"],
+                                 drain_requested=lambda: (home / 'bridge.drain').exists(),
+                                 progress=lambda job, sid, state: progress(job, sid, state))
         def accounts():
             return [bot for bot in config.get("bots", []) if isinstance(bot.get("token"), str)
                     and not bot["token"].startswith("ISI") and len(bot["token"]) > 20]
@@ -130,7 +138,15 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
         schedules = Schedules(home, store, config, accounts, log)
         maintenance = Maintenance(home, store, call, log)
         approvals = ApprovalRelay(lambda path, method, body: backend.request(path, method, body),
-                                  lambda bot, owner, key, request: notify_approval(call, bot, owner, key, request), config["owner_ids"])
+                                   lambda bot, owner, key, request: notify_approval(call, bot, owner, key, request), config["owner_ids"])
+        def progress(job, sid, state):
+            labels = {'working': '⚙️ Processing…', 'waiting_approval': '⏳ Waiting for your approval…',
+                      'checking_backend': '🔄 Checking backend connection…'}
+            bot = resolve(job['account_id'])
+            if bot and job['status_message_id'] and state in labels:
+                call(bot['token'], 'editMessageText', {'chat_id': job['conversation_id'],
+                    'message_id': job['status_message_id'], 'text': labels[state],
+                    'reply_markup': {'inline_keyboard': [[{'text': 'Stop', 'callback_data': f'st-{sid}'}]]}}, timeout=5)
         def checkpoint(sid):
             runtime.checkpoint(sid)
             job = runtime.current_job()
@@ -141,8 +157,9 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
                         "message_id": job["status_message_id"], "text": "⚙️ Processing…",
                         "reply_markup": {"inline_keyboard": [[{"text": "Stop", "callback_data": f"st-{sid}"}]]}}, timeout=5)
         conversations = Conversations(home, config, backend, runtime, personas, approvals, context, meter, rate, send, checkpoint, log,
-                                      memories=lambda identity, chat: store.list_memories(identity, chat),
-                                      send_file=output.send_file)
+                                       memories=lambda identity, chat: store.list_memories(identity, chat),
+                                       send_file=output.send_file,
+                                       prompt=lambda sid, text, **options: runtime.run_prompt(backend, sid, text, **options))
         provisioning = Provisioning(home, config, accounts, personas, call, send, edit,
                                      lambda bot: app.start_poller(bot), log)
         authorize = lambda user: authorized(config, user)
@@ -157,6 +174,11 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
             authorize=authorize, send=send, controls=controls, stopped=stopped, log=log)
         router = JobRouter(resolve, config, store, jobs, conversations, gateway, send, call, output)
         producer = BackgroundProducer(jobs, store, matches)
+        def observe_execution(receipt):
+            bot = resolve(receipt['account_id'])
+            if bot:
+                approvals.register(receipt['session_id'], bot, receipt['conversation_id'])
+        reconciler = ExecutionReconciler(jobs, backend, log, observe=observe_execution)
         def schedule_tick():
             schedules.sync()
             personas.sync()
@@ -174,12 +196,14 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
             recovered = jobs.recover()
             if recovered:
                 log("Interrupted jobs require review:", len(recovered))
+            reconciler.tick()
             return True
         def retention_tick():
             pruned = jobs.prune_terminal(older_than=retention_days * 86400)
             if pruned:
                 log("Retention pruned", len(pruned), "settled jobs")
         loops = {
+            'execution-reconciliation': lambda: periodic(stopped, 5, reconciler.tick, log, 'Execution reconciliation'),
             "schedule-producer": lambda: periodic(stopped, 20, schedule_tick, log, "Schedule producer"),
             "approval-relay": lambda: periodic(stopped, 2, approvals.poll, log, "Approval relay"),
             "initiative-producer": lambda: periodic(stopped, max(60, int((config.get("trigger") or {}).get("initiatif_detik", 300))),
@@ -187,7 +211,9 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
             "task-producer": lambda: periodic(stopped, 5, lambda: producer.tasks_due({bot_id(bot) for bot in accounts()}), log, "Task producer", True),
             "provisioning": lambda: periodic(stopped, 20, provisioning.scan, log, "Provisioning"),
             "legacy-outbox": lambda: periodic(stopped, 3, maintenance.legacy_outbox, log, "Legacy outbox"),
-            "retention": lambda: periodic(stopped, 6 * 3600, retention_tick, log, "Retention", True)}
+             "retention": lambda: periodic(stopped, 6 * 3600, retention_tick, log, "Retention", True)}
+        if events:
+            loops['execution-events'] = lambda: events.run(stopped)
         closer = resources.pop_all()
         app = Application(shutdown=stopped, runtime=runtime, worker_pools=workers, context=context,
             bots=accounts, poller=gateway.poll, account_key=lambda bot: ("telegram", bot["token"].split(":", 1)[0]), prepare=prepare,

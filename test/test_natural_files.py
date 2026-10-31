@@ -3,9 +3,20 @@ import unittest
 from unittest.mock import Mock
 
 from test.support import make_application
+from openbridge.services.conversations import session_key
 
 
 class NaturalFiles(unittest.TestCase):
+    def test_fresh_session_does_not_race_a_queued_compaction(self):
+        app = make_application(self)
+        p = app.components
+        bot = p.configuration.data['bots'][0]
+        persona = {'nama': bot['nama'], 'persona': bot.get('persona', '')}
+        p.conversations.sessions[session_key(bot, 42, persona)] = 'old-session'
+        p.conversations.fresh(bot, 42, persona)
+        p.backend.compact_session.assert_not_called()
+        p.backend.rename_session.assert_called_once()
+
     def test_plain_request_emits_durable_file_and_refreshes_capabilities(self):
         app = make_application(self)
         p = app.components

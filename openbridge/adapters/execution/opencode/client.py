@@ -14,10 +14,11 @@ def load_service(path):
 
 
 class OpenCodeClient:
-    def __init__(self, url: str, auth: tuple, transport: JsonTransport):
+    def __init__(self, url: str, auth: tuple, transport: JsonTransport, events=None):
         self.url = url.rstrip("/")
         self.auth = auth
         self.transport = transport
+        self.events = events
 
     def request(self, path, method="GET", body=None, timeout=45):
         if not path.startswith("/api/"):
@@ -82,8 +83,33 @@ class OpenCodeClient:
     def delete_session(self, sid):
         return self.require_success(self.request(self.session_path(sid), "DELETE"))
 
-    def compact_session(self, sid):
-        return self.require_success(self.request(self.session_path(sid) + "/compact", "POST", {}))
+    def compact_session(self, sid, timeout=600, on_accepted=None, on_state=None,
+                        clock=time.monotonic, wait=time.sleep):
+        # V2 /compact admits work asynchronously; a successful POST does not
+        # mean a new prompt can safely be submitted to this session yet.
+        active = self.require_success(self.request('/api/session/active')).get('data')
+        if not isinstance(active, dict) or sid in active:
+            raise ExecutionUncertain('Session is not available for compaction')
+        response = self.request(self.session_path(sid) + '/compact', 'POST', {})
+        if response.get('error'):
+            raise ExecutionUncertain('Compaction acceptance is unknown')
+        receipt = (response.get('data') or {}).get('id')
+        if not receipt:
+            raise ExecutionUncertain('Compaction returned no receipt')
+        if on_accepted:
+            try:
+                on_accepted(receipt)
+            except Exception as error:
+                raise ExecutionUncertain('Compaction receipt could not be persisted') from error
+        deadline = clock() + timeout
+        while clock() < deadline:
+            result = self.completion(sid, receipt)
+            if result and self.session_idle(sid):
+                if result['outcome'] != 'succeeded':
+                    raise RuntimeError('Compaction failed')
+                return response
+            wait(1)
+        raise ExecutionUncertain('Compaction timed out')
 
     def rename_session(self, sid, title):
         return self.require_success(self.request(self.session_path(sid), "PATCH", {"title": title}))
@@ -108,13 +134,54 @@ class OpenCodeClient:
     def set_agent(self, sid, agent):
         return self.require_success(self.request(self.session_path(sid) + "/agent", "POST", {"agent": agent}))
 
-    def run_prompt(self, session_id, text, timeout=120, clock=time.monotonic, wait=time.sleep):
+    def completion(self, session_id, message_id):
+        """Read only the terminal result belonging to this exact accepted user ID."""
+        messages = sorted(self.messages(session_id), key=lambda m: m.get('time', {}).get('created', 0))
+        accepted = next((i for i, m in enumerate(messages)
+                         if m.get('id') == message_id and m.get('type') in ('user', 'compaction')), None)
+        if accepted is None:
+            return None
+        fresh = []
+        for message in messages[accepted + 1:]:
+            if message.get('type') in ('user', 'compaction'):
+                break  # A later user's result never belongs to this receipt.
+            fresh.append(message)
+        tools_used = any(m.get('finish') == 'tool-calls' or
+                         any(p.get('type') == 'tool' for p in m.get('content', [])) for m in fresh)
+        terminal = next((i for i, m in enumerate(fresh) if m.get('type') == 'idle'), None)
+        if terminal is not None:
+            outcome = fresh[terminal].get('outcome')
+            if outcome not in ('succeeded', 'failed', 'interrupted', 'cancelled'):
+                return None
+            answers = [' '.join(p.get('text', '') for p in m.get('content', []) if p.get('type') == 'text').strip()
+                       for m in fresh[:terminal] if m.get('type') == 'assistant' and m.get('finish') != 'tool-calls']
+            return {'outcome': 'succeeded' if outcome == 'succeeded' else 'failed',
+                    'answer': '\n\n'.join(t for t in answers if t), 'error': fresh[terminal].get('error'),
+                    'tools_used': tools_used}
+        if fresh and fresh[-1].get('type') == 'assistant' and fresh[-1].get('finish') == 'error':
+            return {'outcome': 'failed', 'answer': '', 'error': fresh[-1].get('error'),
+                    'requires_idle': True, 'tools_used': tools_used}
+        return None
+
+    def run_prompt(self, session_id, text, timeout=120, clock=time.monotonic, wait=time.sleep,
+                   on_accepted=None, on_state=None, approval_timeout=300):
+        if self.events:
+            self.events.watch(session_id)
+        try:
+            return self._run_prompt(session_id, text, timeout, clock, wait, on_accepted, on_state, approval_timeout)
+        finally:
+            if self.events:
+                self.events.unwatch(session_id)
+
+    def _run_prompt(self, session_id, text, timeout, clock, wait, on_accepted, on_state, approval_timeout):
         """Wait for this accepted user message's terminal idle, never partial text.
 
         V2 prompt acceptance returns a user message ID, not a completed answer.
         Timeouts and transport failures after acceptance require reconciliation.
         """
         active = self.require_success(self.request("/api/session/active"))
+        if not isinstance(active.get('data'), dict):
+            raise RuntimeError('OpenCode returned no valid active-session inventory')
         if session_id in (active.get("data") or {}):
             raise ExecutionUncertain("OpenCode session is already active")
         response = self.request(self.session_path(session_id) + "/prompt", "POST", {"text": text})
@@ -126,43 +193,54 @@ class OpenCodeClient:
         message_id = (response.get("data") or {}).get("id")
         if not message_id:
             raise ExecutionUncertain("OpenCode returned no accepted message ID")
-        deadline = clock() + timeout
-        while clock() < deadline:
+        if on_accepted:
             try:
-                messages = sorted(self.messages(session_id),
-                                  key=lambda message: message.get("time", {}).get("created", 0))
+                on_accepted(message_id)
             except Exception as error:
-                raise ExecutionUncertain("OpenCode result lookup failed") from error
-            accepted = next((index for index, message in enumerate(messages)
-                             if message.get("id") == message_id), None)
-            if accepted is not None:
-                fresh = messages[accepted + 1:]
-                terminal = next((index for index, message in enumerate(fresh)
-                                 if message.get("type") == "idle"), None)
-                if terminal is None and fresh and fresh[-1].get("type") == "assistant" and fresh[-1].get("finish") == "error":
-                    # An aborted/denied tool turn can finish without an idle
-                    # message. Do not keep polling until timeout and falsely
-                    # fence the conversation if execution is verifiably over.
-                    if self.session_idle(session_id):
-                        raise RuntimeError("OpenCode execution ended with an error")
-                    raise ExecutionUncertain("OpenCode failed but backend state needs review")
-                if terminal is not None:
-                    if fresh[terminal].get("outcome") != "succeeded":
-                        failure = fresh[terminal].get("error")
-                        if isinstance(failure, dict) and ("limit" in str(failure.get("type", "")).lower()
-                                                          or "quota" in str(failure.get("type", "")).lower()):
-                            # Provider quota, not work gone wrong: the answer
-                            # never ran, so deferring the whole job is safe
-                            # and replayable at the next pump tick.
-                            raise RetryLater(900)
-                        raise RuntimeError("OpenCode execution did not succeed")
-                    answers = [" ".join(part.get("text", "") for part in message.get("content", [])
-                                         if part.get("type") == "text").strip()
-                               for message in fresh[:terminal] if message.get("type") == "assistant"
-                               and message.get("finish") != "tool-calls"]
-                    answer = "\n\n".join(text for text in answers if text)
-                    if not answer:
-                        raise RuntimeError("OpenCode completed without a text answer")
-                    return answer
-            wait(1)
+                raise ExecutionUncertain('OpenCode receipt could not be persisted') from error
+        start = previous = clock()
+        work_left, approval_left = float(timeout), float(approval_timeout)
+        hard_deadline = start + timeout + approval_timeout
+        errors, state, last_permission = 0, 'working', start - 5
+        while clock() < hard_deadline and work_left > 0 and approval_left > 0:
+            now = clock()
+            elapsed = max(0, now - previous)
+            previous = now
+            if state == 'waiting_approval':
+                approval_left -= elapsed
+            else:
+                work_left -= elapsed
+            if on_state and now - last_permission >= 5:
+                last_permission = now
+                permissions = self.request(self.session_path(session_id) + '/permission')
+                pending = permissions.get('data')
+                state = ('waiting_approval' if pending else 'working') if isinstance(pending, list) else 'checking_backend'
+                on_state(state)
+            try:
+                result = self.completion(session_id, message_id)
+                errors = 0
+            except Exception as error:
+                errors += 1
+                if on_state:
+                    on_state('checking_backend')
+                if errors >= 3:
+                    raise ExecutionUncertain('OpenCode result lookup failed') from error
+                result = None
+            if result:
+                if result.get('requires_idle') and not self.session_idle(session_id):
+                    raise ExecutionUncertain('OpenCode failed but backend state needs review')
+                if result['outcome'] != 'succeeded':
+                    failure = result.get('error')
+                    if not result.get('tools_used') and isinstance(failure, dict) and ('limit' in str(failure.get('type', '')).lower()
+                                                     or 'quota' in str(failure.get('type', '')).lower()):
+                        raise RetryLater(900)
+                    raise RuntimeError('OpenCode execution did not succeed')
+                if not result['answer']:
+                    raise RuntimeError('OpenCode completed without a text answer')
+                return result['answer']
+            if self.events:
+                self.events.wait(session_id, 1)
+                wait(.25)  # Coalesce token events rather than querying history per token.
+            else:
+                wait(1)
         raise ExecutionUncertain("OpenCode result timed out; session may still be active")

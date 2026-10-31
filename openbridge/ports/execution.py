@@ -14,7 +14,12 @@ class ExecutionBackend(Protocol):
     def submit_prompt(self, session_id: str, text: str) -> dict:
         ...
 
-    def run_prompt(self, session_id: str, text: str, timeout=120) -> str:
+    def run_prompt(self, session_id: str, text: str, timeout=120,
+                   on_accepted=None, on_state=None, approval_timeout=300) -> str:
+        ...
+
+    def completion(self, session_id: str, message_id: str):
+        """Return the terminal result for an exact receipt, or None if unknown."""
         ...
 
     def session_idle(self, session_id: str) -> bool:

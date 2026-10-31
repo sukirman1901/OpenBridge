@@ -22,14 +22,20 @@ def session_key(bot, chat_id, persona, mode="grup"):
 
 class Conversations:
     def __init__(self, home, config, backend, runtime, personas, approvals, context, meter, rate, send, checkpoint, log,
-                 memories=None, send_file=None):
+                 memories=None, send_file=None, prompt=None):
         self.home, self.config, self.backend, self.runtime = home, config, backend, runtime
         self.personas, self.approvals, self.context, self.meter, self.rate = personas, approvals, context, meter, rate
         self.send, self.checkpoint, self.log = send, checkpoint, log
         self.memories = memories
         self.send_file = send_file
+        self.prompt = prompt
         self.sessions, self.turns = {}, {}
         self.lock = threading.Lock()
+
+    def _run_prompt(self, sid, text, timeout=120, purpose='reply'):
+        if self.prompt:
+            return self.prompt(sid, text, timeout=timeout, purpose=purpose)
+        return self.backend.run_prompt(sid, text, timeout=timeout)
 
     def permissions(self):
         with (self.home / "opencode.jsonc").open() as handle:
@@ -49,7 +55,7 @@ class Conversations:
                 memories=self.memories(bot_id(bot), chat_id) if self.memories else ())
         service = ConversationSessions(self.sessions, self.lock,
             lambda title: self.backend.open_session(title, str(self.home), self.permissions()),
-            lambda sid, text, timeout: self.backend.run_prompt(sid, text, timeout=timeout),
+            lambda sid, text, timeout: self._run_prompt(sid, text, timeout=timeout, purpose='briefing'),
             lambda sid: self.approvals.register(sid, bot, chat_id), self.checkpoint, self.log)
         return service.get(session_key(bot, chat_id, persona, mode),
                            f"telegram-{bot_id(bot)}-{persona['nama']}-{chat_id}-{mode}", briefing)
@@ -67,8 +73,9 @@ class Conversations:
         summary = ""
         if old:
             self.checkpoint(old)
-            self.backend.compact_session(old)
-            summary = self.backend.run_prompt(old, "Write a handoff summary: topics, decisions, open work. Max 120 words.", timeout=90)
+            # The summary itself is the handoff; pre-compacting used to queue
+            # async work and race the next prompt, falsely fencing /new.
+            summary = self._run_prompt(old, "Write a handoff summary: topics, decisions, open work. Max 120 words.", timeout=90, purpose='handoff')
             # Keep the original lookup title for the new session, not the archived one.
             self.backend.rename_session(old, f"archived-{old}-{uuid.uuid4().hex[:8]}")
             del self.sessions[key]
@@ -99,7 +106,7 @@ class Conversations:
         # Owner approval requests may remain pending for five minutes. The
         # backend's short default is not a suitable wall-clock budget for
         # interactive tool work; expiry must still fence unknown execution.
-        answer = self.backend.run_prompt(sid, capabilities + f"[Recent conversation context]:\n{context}\n\n{framed('MESSAGE', sender, text)}",
+        answer = self._run_prompt(sid, capabilities + f"[Recent conversation context]:\n{context}\n\n{framed('MESSAGE', sender, text)}",
                                          timeout=900)
         self.context.append(chat_id, "bot", answer, name=bot["nama"])
         if self.send_file:
@@ -114,7 +121,10 @@ class Conversations:
         key = conversation_key(bot, chat_id)
         self.turns[key] = self.turns.get(key, 0) + 1
         if kind == "private" and self.turns[key] >= int(self.config.get("compact_per_turns", 120)):
-            self.backend.compact_session(sid)
+            if self.prompt:
+                self.prompt(sid, '', timeout=600, purpose='compaction')
+            else:
+                self.backend.compact_session(sid)
             self.turns[key] = 0
 
     def background_session(self, job, bot):
@@ -130,7 +140,9 @@ class Conversations:
             raise RetryLater(15)
         context = (f"You are {bot['nama']}. Persona: {bot.get('persona', '')}\n"
                    "Respect approvals; never access bridge credentials. Verify work; deliverables go under hasil/.\n")
-        answer = self.backend.run_prompt(sid, context + prompt, timeout=timeout)
+        job = self.runtime.current_job()
+        purpose = 'task_step' if job and job['kind'] == 'task' else job['kind'] if job else 'schedule'
+        answer = self._run_prompt(sid, context + prompt, timeout=timeout, purpose=purpose)
         try:
             self.meter.extract_and_record(bot_id(bot), self.backend.session_info(sid))
         except Exception as error:

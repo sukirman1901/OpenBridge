@@ -168,6 +168,46 @@ template ships no credentials; a unit test keeps it that way.
 
 ## Verify
 
+### Runtime recovery and safe deployment
+
+Each backend submission records an intent before POST and then persists the
+accepted message ID alongside its job/run/session and purpose. On restart or a
+lost connection, a reconciler reads the result for that exact ID. It releases a
+fence only after confirming that the session is inactive, the inbox is empty,
+and that execution has a terminal result. It never submits the prompt again.
+Missing receipts or unknown backend state still require owner review.
+
+SSE events wake status checks; durable message history remains authoritative.
+If SSE disconnects, HTTP polling continues. Owner-approval waiting has its own
+bounded budget, separate from execution time. A completed task step is saved,
+but unfinished task steps are not automatically replayed after interruption.
+
+For routine deployments use:
+
+```sh
+python3 -m deploy.restart --timeout 1200
+```
+
+The `bridge.drain` marker stops new execution/delivery claims while already
+active work drains. Intake still saves messages. The restart refuses to kill
+active work when the drain deadline expires. A stale drain marker must be
+investigated before removal. `stop.sh` remains an immediate shutdown request,
+not the recommended deployment path.
+
+Opt-in live recovery smoke (one isolated prompt with all tools denied; no
+production job database writes):
+
+```sh
+python3 -m deploy.smoke_runtime
+# Also send one successful-check notice to the configured Telegram owner:
+python3 -m deploy.smoke_runtime --telegram
+```
+
+The smoke forces a local wait timeout, reopens the receipt database, and checks
+that the late result is recovered with exactly one prompt POST. Schema migration
+4 adds `runtime_prompts`; back up the SQLite database before deployment and do
+not run older bridge binaries against that schema.
+
 ```
 python3 -m unittest discover -p 'test_*.py'
 python3 -m compileall -q bridge.py openbridge

@@ -149,7 +149,7 @@ class TestJobStore(unittest.TestCase):
             for _ in range(2):
                 store = JobStore(path)
                 self.assertEqual(store.db.execute("SELECT value FROM legacy").fetchone()[0], "keep")
-                self.assertEqual(store.db.execute("SELECT COUNT(*) FROM runtime_migrations").fetchone()[0], 3)
+                self.assertEqual(store.db.execute("SELECT COUNT(*) FROM runtime_migrations").fetchone()[0], 4)
                 store.close()
 
 

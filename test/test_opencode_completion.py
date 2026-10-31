@@ -6,6 +6,90 @@ from openbridge.domain.errors import ExecutionUncertain, RetryLater
 
 
 class TestOpenCodeCompletion(unittest.TestCase):
+    def test_compaction_waits_for_its_exact_terminal_receipt(self):
+        transport = Mock(side_effect=[{'data': {}}, {'data': {'id': 'compact-1'}},
+            {'data': [{'id': 'compact-1', 'type': 'compaction', 'time': {'created': 1}}]},
+            {'data': [{'id': 'compact-1', 'type': 'compaction', 'time': {'created': 1}},
+                      {'id': 'idle', 'type': 'idle', 'outcome': 'succeeded', 'time': {'created': 2}}]},
+            {'data': {}}, {'data': []}])
+        client = OpenCodeClient('http://local', (), transport)
+        accepted, wait = Mock(), Mock()
+        client.compact_session('session', on_accepted=accepted, wait=wait)
+        accepted.assert_called_once_with('compact-1')
+        wait.assert_called_once_with(1)
+
+    def test_approval_wait_uses_separate_budget_from_tool_execution(self):
+        now = [0]
+        def transport(url, method='GET', body=None, auth=None, timeout=45):
+            if url.endswith('/active'):
+                return {'data': {}}
+            if url.endswith('/prompt'):
+                return {'data': {'id': 'current-user'}}
+            if url.endswith('/permission'):
+                return {'data': [{'id': 'permission-1'}] if now[0] < 4 else []}
+            if url.endswith('/message'):
+                return self.messages() if now[0] >= 5 else {'data': [
+                    {'id': 'current-user', 'type': 'user', 'time': {'created': 10}}]}
+            raise AssertionError(url)
+        client = OpenCodeClient('http://local', (), transport)
+        states = []
+        answer = client.run_prompt('session', 'hello', timeout=2, approval_timeout=10,
+            on_state=states.append, clock=lambda: now[0], wait=lambda n: now.__setitem__(0, now[0] + n))
+        self.assertEqual(answer, 'final')
+        self.assertIn('waiting_approval', states)
+        self.assertGreater(now[0], 2)
+
+    def test_permission_wait_is_bounded_and_never_auto_approved(self):
+        now, calls = [0], []
+        def transport(url, method='GET', body=None, auth=None, timeout=45):
+            calls.append((url, method))
+            if url.endswith('/active'):
+                return {'data': {}}
+            if url.endswith('/prompt'):
+                return {'data': {'id': 'current-user'}}
+            if url.endswith('/permission'):
+                return {'data': [{'id': 'permission-1'}]}
+            return {'data': [{'id': 'current-user', 'type': 'user', 'time': {'created': 10}}]}
+        client = OpenCodeClient('http://local', (), transport)
+        with self.assertRaises(ExecutionUncertain):
+            client.run_prompt('session', 'hello', timeout=2, approval_timeout=3, on_state=Mock(),
+                clock=lambda: now[0], wait=lambda n: now.__setitem__(0, now[0] + n))
+        self.assertLessEqual(now[0], 5)
+        self.assertEqual([method for _, method in calls if method == 'POST'], ['POST'])
+
+    def test_receipt_is_persisted_before_any_result_lookup(self):
+        client = self.client([self.messages()])
+        receipt = Mock()
+        def accepted(message_id):
+            self.assertEqual(client.transport.call_count, 2)
+            receipt(message_id)
+        self.assertEqual(client.run_prompt('session', 'hello', on_accepted=accepted), 'final')
+        receipt.assert_called_once_with('current-user')
+
+    def test_receipt_storage_failure_is_ambiguous_not_retried(self):
+        client = self.client([])
+        with self.assertRaises(ExecutionUncertain):
+            client.run_prompt('session', 'hello', on_accepted=Mock(side_effect=OSError('disk')))
+        self.assertEqual(client.transport.call_count, 2)
+
+    def test_completion_never_uses_a_later_users_answer(self):
+        client = self.client([])
+        client.messages = Mock(return_value=[
+            {'id': 'u1', 'type': 'user', 'time': {'created': 1}},
+            {'id': 'u2', 'type': 'user', 'time': {'created': 2}},
+            {'id': 'a2', 'type': 'assistant', 'finish': 'stop', 'time': {'created': 3},
+             'content': [{'type': 'text', 'text': 'wrong reply'}]},
+            {'id': 'i2', 'type': 'idle', 'outcome': 'succeeded', 'time': {'created': 4}},
+        ])
+        self.assertIsNone(client.completion('session', 'u1'))
+        self.assertEqual(client.completion('session', 'u2')['answer'], 'wrong reply')
+
+    def test_disconnect_during_lookup_does_not_resubmit_prompt(self):
+        client = self.client([{'error': 'URLError'}, self.messages()])
+        self.assertEqual(client.run_prompt('session', 'hello', wait=Mock()), 'final')
+        posts = [c for c in client.transport.call_args_list if len(c.args) > 1 and c.args[1] == 'POST']
+        self.assertEqual(len(posts), 1)
+
     def client(self, history, accepted=None, active=None):
         transport = Mock(side_effect=[{"data": active or {}},
             accepted if accepted is not None else {"data": {"id": "current-user"}}, *history])
@@ -70,6 +154,16 @@ class TestOpenCodeCompletion(unittest.TestCase):
         with self.assertRaises(RetryLater) as error:
             client.run_prompt("session", "hello")
         self.assertGreaterEqual(error.exception.delay, 60)
+
+    def test_quota_after_tool_work_never_replays_the_prompt(self):
+        history = self.messages('failed')
+        history['data'][0]['error'] = {'type': 'provider.chatgpt-limit'}
+        history['data'].append({'id': 'tool-work', 'type': 'assistant', 'finish': 'tool-calls',
+            'time': {'created': 15}, 'content': [{'type': 'tool', 'name': 'shell'}]})
+        client = self.client([history])
+        with self.assertRaises(RuntimeError) as error:
+            client.run_prompt('session', 'hello')
+        self.assertNotIsInstance(error.exception, RetryLater)
 
     def test_plain_provider_failure_still_ends_the_job(self):
         history = self.messages("failed")

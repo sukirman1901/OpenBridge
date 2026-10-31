@@ -65,7 +65,8 @@ class JobCommands:
                 if steps:
                     self.send("Latest checkpointed step (not a final result):\n" + steps[-1]["answer"])
                     return
-            self.send("\n\n".join(output["text"] for output in outputs)
+            self.send("\n\n".join(output.get('text') or
+                      (f"File: {output['path']}" if output.get('path') else '') for output in outputs)
                       or f"Job #{job['id']}: {job['status']}; no saved text result.")
             return
         if job["status"] != "interrupted":
