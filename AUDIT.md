@@ -477,3 +477,19 @@ neutralization, answer-prompt integration); one legasi assertion in
 test_bridge_dispatch was updated to the new prompt shape, the rest untouched.
 Suite 406 OK; compileall clean. Reload healthy (getMe @Openuna_bot,
 OpenCode 2.2.4, quick_check ok, fk clean, succeeded jobs 8).
+
+## ✅ Batch 6 — MCP connector template (07:5x UTC+7)
+
+deploy/mcp.example.jsonc documents mergeable opencode mcp entries for Gmail
+(@gongrzhe/server-gmail-autoauth-mcp), Google Drive
+(@modelcontextprotocol/server-gdrive), and GitHub
+(@modelcontextprotocol/server-github) — all disabled by default, secrets
+referenced through {file:*} indirection into 0600 private files, with merge
+and setup notes in-file. README gained a "MCP connectors (optional)" section;
+config.example.json links the template. No runtime change: nothing is enabled
+until the owner merges and flips enabled:true.
+
+TDD: test_mcp_template.py (4 tests) written first (three servers present,
+type/enabled declared, no live credentials in the template, documented
+GITHUB_PERSONAL_ACCESS_TOKEN env name). Suite 410 OK; compileall clean.
+No reload needed (config-only change); running bridge untouched.

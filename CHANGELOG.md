@@ -46,6 +46,9 @@ All notable changes to OpenBridge are documented here. This project follows the 
   source and a data-not-directives note; embedded marker tokens inside user
   text are neutralized so injection cannot fake the closing marker. The
   briefing states the rule once, globally.
+- **MCP connector template**: `deploy/mcp.example.jsonc` documents mergeable
+  `mcp` entries for Gmail, Google Drive, and GitHub with `{file:*}` credential
+  indirection and per-server setup notes; a unit test keeps real secrets out.
 
 ### Fixed
 - **One-shot anchors are timezone-proof**: stored one-shot expressions are

@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy this file to config.json and fill in your values. config.json itself must never be committed: tokens stay in private {file:*.token} files.",
+  "_comment": "Copy this file to config.json and fill in your values. config.json itself must never be committed: tokens stay in private {file:*.token} files. MCP connectors (Gmail/Drive/GitHub) are optional; see deploy/mcp.example.jsonc.",
   "bots": [
     {
       "nama": "Una",

@@ -1,0 +1,44 @@
+{
+  // OpenBridge MCP connector template (batch 6).
+  //
+  // HOW TO MERGE: copy the entries you want under the top-level "mcp" key of
+  // your bridge opencode.jsonc (the file next to config.json). Keep secrets in
+  // environment variables loaded from private files — never write real tokens
+  // into opencode.jsonc or this template. Restart the bridge after merging so
+  // new agent sessions pick the servers up.
+  //
+  // Per-server setup notes:
+  //  * gmail    — needs an OAuth2 refresh token (drive/gmail scope). Generate
+  //               it once with the official Google flow and place the JSON in
+  //               ~/.local/state/opencode/gmail.oauth.json, then reference it
+  //               through the environment indirection below.
+  //  * gdrive   — uses the same Google OAuth2 setup as gmail.
+  //  * github   — create a fine-grained personal access token with the repo
+  //               scopes you allow the agent, and store it in a 0600 file.
+  "mcp": {
+    "gmail": {
+      "type": "local",
+      "command": ["npx", "-y", "@gongrzhe/server-gmail-autoauth-mcp"],
+      "enabled": false,
+      "environment": {
+        "GMAIL_OAUTH_JSON": "{file:~/.local/state/opencode/gmail.oauth.json}"
+      }
+    },
+    "gdrive": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-gdrive"],
+      "enabled": false,
+      "environment": {
+        "GOOGLE_APPLICATION_CREDENTIALS": "{file:~/.local/state/opencode/google.oauth.json}"
+      }
+    },
+    "github": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-github"],
+      "enabled": false,
+      "environment": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "{file:~/.local/state/opencode/github.token}"
+      }
+    }
+  }
+}

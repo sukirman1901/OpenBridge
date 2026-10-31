@@ -157,6 +157,15 @@ silently after a crash — you decide via `/resolve`.
   unresolved deliveries (`pending`/`sending`/`uncertain`) are never pruned.
 - WhatsApp and voice transcription are not implemented yet.
 
+## MCP connectors (optional)
+
+Agents can reach Gmail, Google Drive, and GitHub through MCP servers. Copy the
+entries you want from [`deploy/mcp.example.jsonc`](deploy/mcp.example.jsonc)
+under the top-level `mcp` key of the bridge `opencode.jsonc`, put the OAuth2
+refresh token and GitHub token in private 0600 files (as the template shows
+with `{file:*}` references), flip `enabled: true`, and restart the bridge. The
+template ships no credentials; a unit test keeps it that way.
+
 ## Verify
 
 ```
