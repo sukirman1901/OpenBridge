@@ -26,6 +26,13 @@ All notable changes to OpenBridge are documented here. This project follows the 
   ownership guards before any item op.
 - 25 new tests (`test/test_routines.py`); full suite is now 366 passing.
 
+### Fixed
+- **One-shot anchors are timezone-proof**: stored one-shot expressions are
+  UTC-naive, but the firing evaluation read them as the host's local time —
+  on a `TZ=Asia/Jakarta` host every reminder would have fired seven hours
+  early. The once-kind occurrence now reads stored expressions as UTC
+  explicitly, and CI runs the whole suite again under `TZ=Asia/Jakarta`.
+
 ## [0.2.0] - 2026-10-31 — Modular autonomous-agent runtime
 
 ### Added

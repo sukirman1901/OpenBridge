@@ -1,5 +1,5 @@
 """Pure due-time evaluation and small durable background producers."""
-from datetime import datetime
+from datetime import datetime, timezone
 import math
 
 
@@ -23,7 +23,12 @@ def schedule_occurrence(row, now, cron_matches):
         return (f"{row['id']}:minute:{int(now // 60)}", mark) if due and last != mark else None
     if kind == "once":
         try:
-            due = not last and datetime.fromisoformat(row["expr"]).timestamp() <= now
+            # Stored one-shot expressions are UTC-naive (gmtime convention);
+            # forever trust that, regardless of the host's timezone. Reading
+            # them as local time makes reminders fire seven hours early on
+            # TZ=Asia/Jakarta hosts.
+            due = not last and datetime.fromisoformat(row["expr"]).replace(
+                tzinfo=timezone.utc).timestamp() <= now
         except ValueError:
             return None
         return (f"{row['id']}:once", current.strftime("%Y-%m-%d %H:%M:%S")) if due else None

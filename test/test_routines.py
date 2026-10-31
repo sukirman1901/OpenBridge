@@ -4,12 +4,14 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from openbridge.services.routines import (format_expr, parse_creation,
+from openbridge.services.routines import (WIB, format_expr, parse_creation,
                                           parse_directive)
 from openbridge.services.schedules import Schedules
 from store import Store
 
-FIXED = datetime(2026, 10, 31, 5, 50)
+# Aware on purpose: the storage convention is UTC-naive, so expectations must
+# not depend on the host's local timezone.
+FIXED = datetime(2026, 10, 31, 5, 50, tzinfo=WIB)
 
 
 def make_service():
@@ -49,13 +51,16 @@ class RoutinesParsing(unittest.TestCase):
     def test_once_reminder(self):
         spec = parse_creation('ingetin aku besok jam 5', FIXED)
         self.assertEqual(spec['kind'], 'once')
-        self.assertEqual(spec['expr'], '2026-11-01 05:00')
+        # 05:00 WIB Nov 1 stored as UTC-naive — same string on any host.
+        self.assertEqual(spec['expr'], '2026-10-31 22:00')
         self.assertEqual(spec['label'], 'tomorrow')
 
     def test_reminder_in_the_past_moves_to_next_day(self):
         spec = parse_creation('ingetin aku jam 4', FIXED)
         self.assertEqual(spec['kind'], 'once')
-        self.assertEqual(spec['expr'], '2026-11-01 04:00')
+        # 04:00 WIB today already passed the fixed clock → next day,
+        # stored as UTC-naive (2026-11-01 04:00 WIB = 2026-10-31 21:00 UTC).
+        self.assertEqual(spec['expr'], '2026-10-31 21:00')
         self.assertEqual(spec['label'], 'tomorrow')
 
     def test_daily_and_weekly_routines(self):

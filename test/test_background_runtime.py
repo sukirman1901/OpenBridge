@@ -1,10 +1,10 @@
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -76,7 +76,9 @@ class TestBackgroundProducers(BackgroundFixture):
         self.assertEqual(self.producer.schedules_due({"123"}, self.now), [])
 
     def test_overdue_one_shot_is_accepted_once(self):
-        expression = datetime.fromtimestamp(self.now - 60).isoformat(sep=" ")
+        # Storage convention: one-shot expressions are UTC-naive.
+        expression = (datetime.fromtimestamp(self.now - 60, tz=timezone.utc)
+                      .replace(tzinfo=None).isoformat(sep=" "))
         self.schedule(expression, "once")
         self.assertEqual(len(self.producer.schedules_due({"123"}, self.now)), 1)
         self.assertEqual(self.producer.schedules_due({"123"}, self.now + 3600), [])

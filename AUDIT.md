@@ -364,3 +364,16 @@ Verification after deploy:
 - SQLite quick_check ok, foreign_key_check empty, migrations [(1,), (2,), (3,)].
 - 8 succeeded jobs preserved.
 - Tests: 366 OK (341 prior + 25 new in test/test_routines.py); compileall clean.
+## ✅ Deploy record — timezone hardening for one-shot routines
+
+Found via dual-TZ review: stored one-shot expressions are UTC-naive, but the
+firing evaluation interpreted them as host-local time — reminders would have
+fired 7 hours early on TZ=Asia/Jakarta hosts (production TZ=UTC happened to
+mask it). Fix: triggers.py now reads one-shot exprs as UTC explicitly;
+test_routines uses an aware fixed clock so expectations are TZ-independent;
+test_background_runtime stores the overdue-one-shot in UTC convention;
+CI now reruns the full suite under TZ=Asia/Jakarta.
+
+Verified: full suite OK under TZ=UTC, TZ=Asia/Jakarta, and TZ=America/New_York.
+Bridge restarted via ./stop.sh + supervise.sh after the fix: single supervisor,
+single poller, Telegram bot online (offset 19758731), daily backup saved.
