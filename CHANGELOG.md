@@ -36,6 +36,11 @@ All notable changes to OpenBridge are documented here. This project follows the 
   deactivating keeps the audit trail). Active chat-specific facts (with global
   ones after them) are injected into every conversation briefing as a
   PERSISTENT MEMORY section the agent must never contradict.
+- **Outbound files**: background agents can hand produced files to the chat —
+  a final message with a line `@file hasil/x.ext` (or `@photo` for images)
+  becomes a durable `document`/`photo` delivery uploaded via Telegram
+  sendDocument/sendPhoto. Paths are resolved strictly inside the bridge home
+  and must exist, so an agent cannot exfiltrate anything else.
 
 ### Fixed
 - **One-shot anchors are timezone-proof**: stored one-shot expressions are

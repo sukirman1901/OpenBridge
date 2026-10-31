@@ -1,10 +1,12 @@
+from runtime_policy import bot_id
 from openbridge.services.background import BackgroundExecutor
 
 
 class JobRouter:
-    def __init__(self, accounts, config, store, jobs, conversations, gateway, send, call):
+    def __init__(self, accounts, config, store, jobs, conversations, gateway, send, call, output=None):
         self.accounts, self.config, self.store, self.jobs = accounts, config, store, jobs
         self.conversations, self.gateway, self.send, self.call = conversations, gateway, send, call
+        self.output = output
 
     def execute(self, job, payload):
         bot = self.accounts(job["account_id"])
@@ -25,4 +27,6 @@ class JobRouter:
             payload["wait_seconds"] = int((self.config.get("tugas") or {}).get("wait_detik", 240))
         BackgroundExecutor(self.jobs, lambda item: self.conversations.background_session(item, bot),
             lambda sid, prompt, timeout: self.conversations.background_model(bot, sid, prompt, timeout),
-            lambda text: self.send(bot, job["conversation_id"], text)).execute(job, payload)
+            lambda text: self.send(bot, job["conversation_id"], text),
+            lambda path, caption, kind: self.output.send_file(bot_id(bot), job["conversation_id"], path, caption, kind)
+            ).execute(job, payload)

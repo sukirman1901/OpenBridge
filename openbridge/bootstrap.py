@@ -119,7 +119,7 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
                     and not bot["token"].startswith("ISI") and len(bot["token"]) > 20]
         def resolve(account_id):
             return next((bot for bot in config.get("bots", []) if bot.get("token") and bot_id(bot) == account_id), None)
-        delivery = TelegramDelivery(call, resolve, store.enqueue, log)
+        delivery = TelegramDelivery(call, resolve, store.enqueue, log, home=home)
         output = OutputService(runtime, delivery)
         def send(bot, chat_id, text, buttons=None, cols=2):
             return output.send(bot_id(bot), chat_id, text, buttons, cols)
@@ -154,7 +154,7 @@ def create_application(configuration=None, *, backend=None, channel_call=None, l
         gateway = TelegramGateway(config=config, call=call, jobs=jobs, store=store, runtime=runtime, context=context,
             conversations=conversations, commands=commands, media=TelegramMedia(home, call, log), schedules=schedules,
             authorize=authorize, send=send, controls=controls, stopped=stopped, log=log)
-        router = JobRouter(resolve, config, store, jobs, conversations, gateway, send, call)
+        router = JobRouter(resolve, config, store, jobs, conversations, gateway, send, call, output)
         producer = BackgroundProducer(jobs, store, matches)
         def schedule_tick():
             schedules.sync()

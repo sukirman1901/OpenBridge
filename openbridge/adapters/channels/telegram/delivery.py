@@ -1,15 +1,37 @@
 """Telegram formatting, wire payloads, and delivery outcome classification."""
 import json
+from pathlib import Path
+
+from openbridge.adapters.channels.telegram.uploads import post_multipart
+
+
+def outbound_path(home, raw):
+    """Resolve an agent-supplied file path; only real files inside home pass.
+
+    Absolute paths replace `home / raw`, so they can only pass when they truly
+    point back inside home; `..` escapes resolve outside and fail the same check."""
+    raw = str(raw).strip()
+    if not raw:
+        return None
+    try:
+        candidate = (home / raw).resolve()
+    except (ValueError, OSError):
+        return None
+    if home.resolve() not in candidate.parents:
+        return None
+    return candidate if candidate.is_file() else None
 
 
 class TelegramDelivery:
     channel = "telegram"
 
-    def __init__(self, call, resolve_account, enqueue_legacy, log):
+    def __init__(self, call, resolve_account, enqueue_legacy, log, home=None, uploader=post_multipart):
         self.call = call
         self.resolve_account = resolve_account
         self.enqueue_legacy = enqueue_legacy
         self.log = log
+        self.home = home
+        self.uploader = uploader
 
     @staticmethod
     def keyboard(buttons, columns=2):
@@ -63,11 +85,53 @@ class TelegramDelivery:
             self.log("Telegram direct edit failed")
         return result
 
+    def deliver_file(self, account, delivery):
+        """Upload a produced file; text never rides on the same wire."""
+        if self.home is None:
+            return "dead", "outbound files are not configured", None
+        path = outbound_path(self.home, delivery["payload"]["path"])
+        if path is None:
+            self.log("Outbound file rejected", str(delivery["payload"]["path"])[:80])
+            return "dead", "outbound file missing", None
+        document = delivery["payload"]["operation"] == "document"
+        method = "sendDocument" if document else "sendPhoto"
+        fields = {"chat_id": str(delivery["conversation_id"])}
+        caption = delivery["payload"].get("caption")
+        if caption:
+            fields["caption"] = str(caption)[:1024]
+        response = self.uploader(account["token"], method, fields,
+                                 "photo" if not document else "document", path, timeout=90)
+        if response.get("ok"):
+            self.log("Job delivery confirmed", delivery["job_id"], delivery["id"])
+            return "sent", None, None
+        code = response.get("error_code") or response.get("error")
+        description = (response.get("description") or response.get("body") or "").lower()
+        if code == 429:
+            return "pending", "Telegram rate limit", 30
+        if isinstance(code, int) and 400 <= code < 500:
+            return "dead", f"Telegram HTTP {code} ({description[:60]})", None
+        return "uncertain", "Telegram delivery outcome unknown", None
+
+    def send_file(self, account_id, conversation_id, path, caption=None, out_of_scope=True):
+        """Direct (non-durable) file send for channel commands."""
+        token = self._token(account_id)
+        resolved = outbound_path(self.home, path) if self.home else None
+        if resolved is None:
+            return {"ok": False, "description": "outbound file missing"}
+        document = not resolved.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+        method = "sendDocument" if document else "sendPhoto"
+        fields = {"chat_id": str(conversation_id)}
+        if caption:
+            fields["caption"] = str(caption)[:1024]
+        return self.uploader(token, method, fields, "document" if document else "photo", resolved, timeout=90)
+
     def deliver(self, delivery):
         account = self.resolve_account(delivery["account_id"])
         if account is None:
             return "dead", "account unavailable", None
         output = delivery["payload"]
+        if output["operation"] in ("document", "photo"):
+            return self.deliver_file(account, delivery)
         if output["operation"] not in ("send", "edit"):
             return "dead", "unsupported delivery operation", None
         edit = output["operation"] == "edit"

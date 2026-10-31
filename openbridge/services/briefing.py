@@ -64,6 +64,8 @@ def conversation_briefing(*, name, persona, account_id, chat_id, memory_file,
             "  don't describe work, DO it.\n"
             f"- Deliverables (reports, code, data files) go as files under    {output_dir}\n"
             "  create it if needed, then mention the file path in your final message.\n"
+            "- To actually SEND a produced file into the chat, end the message with one line:\n"
+            f"  '@file {output_dir}/name.ext' (any file) or '@photo {output_dir}/img.png caption' (image).\n"
             "- Verify before you claim done: run the actual check/test/counter-check and cite the\n"
             "  evidence (command output, file path, numbers) — never assert from memory alone.\n"
             "- You have a limited number of steps: budget them. If the goal can't be finished,\n"

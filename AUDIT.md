@@ -437,3 +437,27 @@ test_memory_commands.py (7: command wiring, unknown/foreign id rejection,
 bot scoping) written first. Suite 391 OK; compileall clean. Live-verified:
 reload healthy (getMe @Openuna_bot, OpenCode 2.2.4, quick_check ok, migrations
 3, succeeded jobs 8, memory table present).
+
+## ✅ Batch 4 — outbound files via sendDocument (07:5x UTC+7)
+
+Background agents can now hand produced files straight into the chat. A final
+message with a marker line `@file hasil/name.ext` (any file) or
+`@photo hasil/img.png caption` (image) is split by parse_file_outputs into a
+clean text plus durable document/photo delivery operations; the task and
+work-mode prompt teach the convention. New pipeline pieces: OutputService.
+send_file (durable when a job is in scope), TelegramDelivery.deliver_file with
+a stdlib multipart uploader (uploads.py, no external dependency), and a strict
+outbound_path guard — only existing files strictly inside the bridge home are
+sendable, so `../` escapes and absolute paths can never leak. Outcome
+classification follows the text path (sent/dead/pending/uncertain).
+
+TDD: test_file_out.py (12 tests) written first: marker parsing, path-safety
+rejections (`../`, absolute, missing), multipart encoding, delivery outcomes,
+OutputService scoping, and executor-level marker→file emission. Suite 403 OK.
+
+Live E2E: a document delivery for `hasil/tes-file-terkirim.txt` (caption
+"Tes batch 4 — kirim file outbound") was injected as pending and confirmed
+`sent` by the running poller within seconds — the owner received the file on
+Telegram. Test stub rows (inbox 999900, job 999901, delivery 11) were deleted
+afterwards; foreign keys clean, succeeded jobs back to 8, test file removed.
+Reload healthy at 07:48 (single supervisor/poller, bot online offset 19758732).

@@ -24,6 +24,13 @@ class OutputService:
             return
         return self.channel.send_text(account_id, conversation_id, text, buttons, columns)
 
+    def send_file(self, account_id, conversation_id, path, caption=None, kind="document"):
+        """Hand a produced file to the chat; durable when a job is in scope."""
+        if self._scope(account_id, conversation_id):
+            self.runtime.emit({"operation": kind, "path": str(path), "caption": caption})
+            return
+        return self.channel.send_file(account_id, conversation_id, str(path), caption)
+
     def edit(self, account_id, conversation_id, message_id, text, buttons=None, columns=2, parse=False):
         if self._scope(account_id, conversation_id):
             self.runtime.emit({"operation": "edit", "message_id": message_id, "text": text[:4000],
