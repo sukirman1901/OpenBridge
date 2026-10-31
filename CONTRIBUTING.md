@@ -15,10 +15,12 @@ Thanks for your interest in making OpenBridge better! 🎉 This document explain
 git clone https://github.com/sukirman1901/OpenBridge.git
 cd OpenBridge
 python3 -m unittest discover -s test -t .   # all tests must pass
-python3 -m py_compile bridge.py               # entrypoint must compile
+python3 -m compileall -q bridge.py openbridge
 ```
 
 No `pip install` is needed — tests run on the standard library alone.
+Monolith-era tests under `test/legacy/` are retained until their
+uniquely-covered cases are ported to the modern suite; they still run.
 
 ## Making changes
 

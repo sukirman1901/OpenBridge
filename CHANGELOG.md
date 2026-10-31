@@ -2,7 +2,48 @@
 
 All notable changes to OpenBridge are documented here. This project follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and uses [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## [0.2.0] - 2026-10-31 — Modular autonomous-agent runtime
+
+### Added
+- **Settled-job retention**: terminal jobs (succeeded/failed/cancelled) older than
+  `retention.days` (default 30) whose deliveries are all final are pruned together
+  with their durable rows, every 6 hours. Interrupted, queued, and running jobs —
+  and pending/sending/uncertain deliveries — are never pruned.
+- **Priority reminder lanes**: schedule-kind reminders pass the same-lane
+  conversation leader (never the interrupted fence), dispatch before background
+  backlog through a dedicated in-memory key, and deliver before pending task
+  output backlogs.
+- **`supervise.sh`**: supervisor loop with `Restart=on-failure` semantics and
+  exponential backoff for hosts without an init system; `deploy/` ships a systemd
+  unit, a logrotate file, and `config.example.json`.
+- **Verification-first release cycle**: every landed stage deploys under
+  supervision and is verified live (Telegram `getMe`/commands, OpenCode
+  `/api/info`, SQLite integrity and `foreign_key_check`, preserved job counts),
+  with results recorded in `AUDIT.md`.
+
+### Changed
+- `bridge.py` is now a seven-line, import-safe entry point. Importing it, the
+  bootstrap, or any package module performs no configuration, database, network,
+  or thread startup. `openbridge.bootstrap.create_application()` is the explicit
+  per-instance composition root; `Application.run()` is the only startup path.
+- Responsibilities are extracted into layered modules: `domain/`, `ports/`,
+  `runtime/`, `services/`, and `adapters/` (Telegram ingress/commands/media/
+  approvals/delivery, OpenCode execution, SQLite durable persistence).
+- Tests build explicit isolated component graphs instead of patching legacy
+  bridge globals; monolith-era tests are retained as regression coverage under
+  `test/legacy/` until their uniquely-covered cases are ported.
+- Legacy `store.py`, `task_queue.py`, `context_buffer.py`, `usage_meter.py`,
+  `rate_limiter.py`, `approval_relay.py`, `runtime_policy.py`, and
+  `scheduler.py` stay as root compatibility libraries instantiated by the
+  factory — persisted names, files, and schema (migrations 1/2/3) unchanged.
+
+### Removed
+- **SSE/token-streaming delivery** and the Stop button, ▶️ Continue chunks, and
+  streaming progress pings that rode on it: replies now persist a terminal
+  result with delivery intents and deliver once, so retries never re-run the
+  model. Owner Stop control remains via the scoped `st-` callback on live jobs.
+
+## [0.1.0] - 2026-10-30
 
 ### Added
 - **V2 approval relay**: owner-only private Telegram Approve once / Deny buttons for pending permission requests from registered bridge sessions. Requests expire after five minutes and are rejected while the relay is running; network failures never grant approval. No durable `always` approvals are offered. Shell and file edits now require approval; unknown/MCP actions default to ask, and subagents are blocked until child-session routing is supported.
