@@ -89,3 +89,28 @@ class TestOpenCodeCompletion(unittest.TestCase):
         client = self.client([{"error": 503}])
         with self.assertRaises(ExecutionUncertain):
             client.run_prompt("session", "hello")
+
+    def test_aborted_assistant_without_idle_does_not_fence_an_idle_session(self):
+        history = {"data": [
+            {"id": "current-user", "type": "user", "time": {"created": 10}},
+            {"id": "failed", "type": "assistant", "finish": "error",
+             "error": {"type": "aborted"}, "time": {"created": 20}},
+        ]}
+        client = self.client([history])
+        client.session_idle = Mock(return_value=True)
+        with self.assertRaises(RuntimeError) as error:
+            client.run_prompt("session", "hello", wait=Mock())
+        self.assertNotIsInstance(error.exception, ExecutionUncertain)
+        client.session_idle.assert_called_once_with("session")
+
+    def test_aborted_assistant_with_unverified_backend_still_requires_review(self):
+        history = {"data": [
+            {"id": "current-user", "type": "user", "time": {"created": 10}},
+            {"id": "failed", "type": "assistant", "finish": "error",
+             "error": {"type": "aborted"}, "time": {"created": 20}},
+        ]}
+        client = self.client([history])
+        client.session_idle = Mock(return_value=False)
+        with self.assertRaises(ExecutionUncertain):
+            client.run_prompt("session", "hello", wait=Mock())
+        client.session_idle.assert_called_once_with("session")

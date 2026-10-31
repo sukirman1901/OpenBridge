@@ -139,6 +139,13 @@ class OpenCodeClient:
                 fresh = messages[accepted + 1:]
                 terminal = next((index for index, message in enumerate(fresh)
                                  if message.get("type") == "idle"), None)
+                if terminal is None and fresh and fresh[-1].get("type") == "assistant" and fresh[-1].get("finish") == "error":
+                    # An aborted/denied tool turn can finish without an idle
+                    # message. Do not keep polling until timeout and falsely
+                    # fence the conversation if execution is verifiably over.
+                    if self.session_idle(session_id):
+                        raise RuntimeError("OpenCode execution ended with an error")
+                    raise ExecutionUncertain("OpenCode failed but backend state needs review")
                 if terminal is not None:
                     if fresh[terminal].get("outcome") != "succeeded":
                         failure = fresh[terminal].get("error")

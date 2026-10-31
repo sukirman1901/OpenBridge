@@ -1,5 +1,22 @@
 # Bridge audit
 
+## Fix false interrupted fence and restore processing (2026-10-31)
+
+The owner requested restoration of service, not merely renamed status notices.
+Job 23's backend session had a terminal assistant finish=error, error.type=aborted,
+but no idle history message. run_prompt previously polled until timeout and
+raised ExecutionUncertain, incorrectly fencing the conversation after execution
+had stopped. Added terminal-error handling gated by session_idle (both inactive
+and empty inbox required). Unknown/active backend state remains fenced; no
+automatic replay is introduced. Two regression tests failed first, then passed;
+full suite 421 tests pass.
+
+Stopped bridge before reconciliation. Verified job 23 still interrupted, backend
+session inactive, inbox empty, and latest backend assistant aborted. Explicitly
+resolved that one job via JobStore.resolve, preserving all records and not
+retrying its task. Job 26 then became eligible; restarted supervisor to resume
+normal queue execution on the fixed code. No blanket fence deletion or job replay.
+
 ## Truthful queue status (2026-10-31)
 
 Owner reported perpetual Processing. Jobs 26 and 27 were queued, not running:

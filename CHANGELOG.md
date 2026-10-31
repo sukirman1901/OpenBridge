@@ -5,6 +5,9 @@ All notable changes to OpenBridge are documented here. This project follows the 
 ## [Unreleased]
 
 ### Fixed
+- Aborted backend turns without idle history no longer falsely fence a chat
+  when the backend is verified inactive with an empty inbox. Unknown states
+  still require review; interrupted execution is never automatically replayed.
 - Intake notices distinguish queued requests from interrupted-conversation
   blocks; only running requests display Processing.
 - Plain-language chat requests can now hand off files through the same durable
