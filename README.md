@@ -3,7 +3,7 @@
 [![test](https://github.com/sukirman1901/OpenBridge/actions/workflows/test.yml/badge.svg)](https://github.com/sukirman1901/OpenBridge/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Telegram ⇄ OpenCode** — an autonomous agent runtime powered by OpenCode,
+An autonomous agent runtime powered by OpenCode,
 with Telegram as the first communication adapter (WhatsApp and other channels
 are future integrations).
 Python standard library only, with SQLite state.
