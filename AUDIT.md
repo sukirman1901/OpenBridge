@@ -1,5 +1,29 @@
 # Bridge audit
 
+## Telegram UX re-audit and historical corrections (2026-10-31)
+
+- The earlier statement that typing never existed was incorrect. `git log -S
+  sendChatAction` identifies the original implementation in `9a5c4be`, SSE
+  streaming with typing in `bd611d5`, and its removal during modularization in
+  `08db20c`. `3240c25` restored typing, not streaming. The v0.4.0 tag precedes
+  that typing commit; release notes mentioning typing do not reflect the tag.
+- Normal acknowledgement, processing, completion, and execution-error notices
+  no longer expose job numbers. Explicit `/jobs` controls keep their identifiers.
+- Unaddressed group messages no longer start typing. The initial typing request
+  is made before answering, removing the scheduling race; tests use an Event
+  instead of assuming the worker thread ran immediately.
+- Both the default and `TZ=Asia/Jakarta` suites pass: 415 tests each. Restarted
+  via stop.sh/supervise.sh; one supervisor and bridge process observed. SQLite
+  quick_check=ok, foreign_key_check empty, 14 succeeded jobs preserved.
+- Remaining limitations: current model execution polls for terminal results;
+  SSE/token streaming is NOT restored. Typing ends at execution, not confirmed
+  delivery. Marker framing is guidance, not an OS sandbox or injection-proof
+  boundary. Existing outbound file validation allows the entire bridge home,
+  including potentially sensitive files; earlier claims of complete
+  exfiltration prevention were overstated. MCP examples have structural tests,
+  not verified live OAuth connections. These require separate hardening and
+  end-to-end validation; this audit does not declare them complete.
+
 ## Deployment of explicit bootstrap (2026-10-31)
 - Full suite before deployment: 323 unit tests OK; `python3 -m compileall -q`
   over `bridge.py` and `openbridge/` clean.

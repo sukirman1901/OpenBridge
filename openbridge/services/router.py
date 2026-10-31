@@ -15,7 +15,7 @@ class JobRouter:
         if job["kind"] == "telegram_update":
             if job["status_message_id"]:
                 self.call(bot["token"], "editMessageText", {"chat_id": job["conversation_id"],
-                    "message_id": job["status_message_id"], "text": f"⚙️ Job #{job['id']} is processing."}, timeout=5)
+                    "message_id": job["status_message_id"], "text": "⚙️ Processing…"}, timeout=5)
             self.gateway.execute(bot, payload["update"], payload.get("username", ""))
             return
         if job["kind"] == "schedule":

@@ -52,7 +52,7 @@ class DurableRuntime:
             self.execute(job, json.loads(job["payload"]))
             if not self.local.outputs and job["status_message_id"]:
                 self.local.outputs.append({"operation": "send", "text":
-                    f"✅ Job #{job_id} completed; no text reply was needed."})
+                    "✅ Done."})
         except RetryLater as pause:
             self.store.defer(job_id, pause.delay)
             return
@@ -60,8 +60,8 @@ class DurableRuntime:
             status = "interrupted" if isinstance(exc, ExecutionUncertain) else "failed"
             error = type(exc).__name__
             self.local.outputs.append({"operation": "send", "text": (
-                f"⚠️ Job #{job_id} needs review; it will not be replayed. Use /jobs."
-                if status == "interrupted" else f"⚠️ Job #{job_id} failed. Use /jobs for status.")})
+                "⚠️ Processing was interrupted. Please check /jobs before trying again."
+                if status == "interrupted" else "⚠️ I couldn't finish that request. Check /jobs for details.")})
             self.log("Job execution failed", job_id, error)
         finally:
             outputs = self.local.outputs

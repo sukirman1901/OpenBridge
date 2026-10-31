@@ -20,12 +20,16 @@ class TypingLoop(unittest.TestCase):
     def test_typing_calls_send_chataction_until_released(self):
         bot, chat_id = {"token": "tok"}, 777
         calls = []
-        self.gateway.call = lambda token, method, payload, timeout=45: (
-            calls.append(method) or {})
+        called = threading.Event()
+        def call(token, method, payload, timeout=45):
+            calls.append(method)
+            called.set()
+            return {}
+        self.gateway.call = call
         done = threading.Event()
         worker = threading.Thread(target=self.gateway.typing_action, args=(bot, chat_id, done))
         worker.start()
-        self.assertNotIn(worker, [])  # wiring sanity
+        self.assertTrue(called.wait(2))
         done.set()
         worker.join(timeout=10)
         self.assertFalse(worker.is_alive())
@@ -56,6 +60,27 @@ class TypingLoop(unittest.TestCase):
                     "update_id": 9}, "Una")
         self.assertIn("sendChatAction", order)
         self.assertLess(order.index("sendChatAction"), order.index("answer"))
+
+    def test_acknowledgement_has_no_internal_job_number(self):
+        g = make_gateway()
+        g.authorize.return_value = True
+        g.jobs.accept.return_value = (14, True)
+        g.call.return_value = {"ok": True, "result": {"message_id": 99}}
+        g.accept({"token": "999:t"}, {"update_id": 1, "message": {
+            "from": {"id": 2}, "chat": {"id": 777, "type": "private"}, "text": "hi"}})
+        self.assertEqual(g.call.call_args.args[2]["text"], "⏳ Processing…")
+        g.jobs.acknowledge.assert_called_once_with(14, 99)
+
+    def test_unaddressed_group_message_does_not_show_typing(self):
+        g = make_gateway()
+        g.runtime.current_job.return_value = None
+        g.authorize.return_value = True
+        g.media.receive.return_value = ("", "")
+        g.schedules.interpret.return_value = None
+        g.execute({"token": "999:t"}, {"message": {
+            "message_id": 3, "from": {"id": 2}, "chat": {"id": 777, "type": "group"},
+            "text": "talking to someone else"}}, "Una")
+        g.call.assert_not_called()
 
 
 if __name__ == "__main__":

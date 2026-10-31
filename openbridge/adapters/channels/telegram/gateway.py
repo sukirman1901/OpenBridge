@@ -47,7 +47,7 @@ class TelegramGateway:
         try:
             if not callback and self.addressed(message, bot.get("username"), text):
                 result = self.call(bot["token"], "sendMessage", {"chat_id": chat["id"],
-                    "text": f"⏳ Job #{job_id} received. I'll process it in order."}, timeout=8)
+                    "text": "⏳ Processing…"}, timeout=8)
                 acknowledgement = (result.get("result") or {}).get("message_id") if result.get("ok") else None
         finally:
             self.jobs.acknowledge(job_id, acknowledgement)
@@ -89,18 +89,23 @@ class TelegramGateway:
             parts = text.split(maxsplit=1)
             self.commands.handle(bot, chat_id, parts[0].lstrip("/").split("@")[0], parts[1] if len(parts) > 1 else "")
             return
+        if not addressed:
+            job = self.runtime.current_job()
+            if job:
+                self.jobs.note_initiative(conversation_key(bot, chat_id), job["id"],
+                    self.context.format_context(chat_id, self.config.get("trigger", {}).get("konteks_n", 15)))
+            return
         typing_done = threading.Event()
+        # Establish presence before answering, not at the mercy of thread scheduling.
+        try:
+            self.call(bot["token"], "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=5)
+        except Exception:
+            pass
         threading.Thread(target=self.typing_action, args=(bot, chat_id, typing_done), daemon=True).start()
         try:
             scheduled = self.schedules.interpret(bot_id(bot), chat_id, text, addressed)
             if scheduled:
                 self.send(bot, chat_id, scheduled)
-                return
-            if not addressed:
-                job = self.runtime.current_job()
-                if job:
-                    self.jobs.note_initiative(conversation_key(bot, chat_id), job["id"],
-                        self.context.format_context(chat_id, self.config.get("trigger", {}).get("konteks_n", 15)))
                 return
             self.conversations.answer(bot, chat_id, sender, text, chat.get("type"))
         finally:

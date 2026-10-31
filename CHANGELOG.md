@@ -2,6 +2,16 @@
 
 All notable changes to OpenBridge are documented here. This project follows the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Ordinary Telegram replies show a simple Processing status instead of internal
+  job numbers; `/jobs` remains available for diagnostics.
+- Typing is established before model work and is not shown for unaddressed
+  group messages. Regression tests synchronize with events rather than thread timing.
+- Historical audit correction: typing and SSE streaming existed before the
+  modular refactor. Current typing has been restored; SSE streaming has not.
+
 ## [0.3.0] - 2026-10-31 — Routine engine
 
 ### Added
