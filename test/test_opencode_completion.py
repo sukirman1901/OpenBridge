@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock
 
 from openbridge.adapters.execution.opencode import OpenCodeClient
-from openbridge.domain.errors import ExecutionUncertain
+from openbridge.domain.errors import ExecutionUncertain, RetryLater
 
 
 class TestOpenCodeCompletion(unittest.TestCase):
@@ -60,6 +60,30 @@ class TestOpenCodeCompletion(unittest.TestCase):
         with self.assertRaises(RuntimeError) as error:
             client.run_prompt("session", "hello")
         self.assertNotIsInstance(error.exception, ExecutionUncertain)
+
+    def test_provider_limit_outcome_defers_with_quota_pause(self):
+        from openbridge.domain.errors import RetryLater
+        history = self.messages("failed")
+        history["data"][0]["error"] = {"type": "provider.chatgpt-limit",
+                                       "message": "ChatGPT usage limit reached."}
+        client = self.client([history])
+        with self.assertRaises(RetryLater) as error:
+            client.run_prompt("session", "hello")
+        self.assertGreaterEqual(error.exception.delay, 60)
+
+    def test_plain_provider_failure_still_ends_the_job(self):
+        history = self.messages("failed")
+        history["data"][0]["error"] = {"type": "provider.internal", "message": "boom"}
+        client = self.client([history])
+        with self.assertRaises(RuntimeError) as error:
+            client.run_prompt("session", "hello")
+        self.assertNotIsInstance(error.exception, RetryLater)
+
+    def test_terminal_failure_without_error_details_still_ends_the_job(self):
+        client = self.client([self.messages("failed")])
+        with self.assertRaises(RuntimeError) as error:
+            client.run_prompt("session", "hello")
+        self.assertNotIsInstance(error.exception, RetryLater)
 
     def test_transport_failure_after_acceptance_requires_review(self):
         client = self.client([{"error": 503}])

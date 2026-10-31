@@ -32,6 +32,12 @@ All notable changes to OpenBridge are documented here. This project follows the 
   on a `TZ=Asia/Jakarta` host every reminder would have fired seven hours
   early. The once-kind occurrence now reads stored expressions as UTC
   explicitly, and CI runs the whole suite again under `TZ=Asia/Jakarta`.
+- **Provider-quota pauses a job instead of failing it**: when the backend's
+  idle outcome reports a limit (e.g. `provider.chatgpt-limit`), the prompt
+  never executed (zero tokens), so the job is now deferred (`RetryLater`,
+  15-minute wait) and resumes at the next pump; ordinary provider failures
+  still end the job durably. Live-verified trigger: a one-shot reminder fired
+  9.7 s after its stored target (AUDIT.md).
 
 ## [0.2.0] - 2026-10-31 — Modular autonomous-agent runtime
 

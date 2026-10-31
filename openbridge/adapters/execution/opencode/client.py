@@ -4,7 +4,7 @@ import time
 from urllib.parse import quote
 
 from openbridge.ports.transport import JsonTransport
-from openbridge.domain.errors import ExecutionUncertain
+from openbridge.domain.errors import ExecutionUncertain, RetryLater
 
 
 def load_service(path):
@@ -141,6 +141,13 @@ class OpenCodeClient:
                                  if message.get("type") == "idle"), None)
                 if terminal is not None:
                     if fresh[terminal].get("outcome") != "succeeded":
+                        failure = fresh[terminal].get("error")
+                        if isinstance(failure, dict) and ("limit" in str(failure.get("type", "")).lower()
+                                                          or "quota" in str(failure.get("type", "")).lower()):
+                            # Provider quota, not work gone wrong: the answer
+                            # never ran, so deferring the whole job is safe
+                            # and replayable at the next pump tick.
+                            raise RetryLater(900)
                         raise RuntimeError("OpenCode execution did not succeed")
                     answers = [" ".join(part.get("text", "") for part in message.get("content", [])
                                          if part.get("type") == "text").strip()

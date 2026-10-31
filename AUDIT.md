@@ -400,3 +400,16 @@ Result:
   the run shows zero tokens (the prompt never executed).
 
 Cleanup: schedule row 1 deleted after the check.
+
+## ✅ Deploy record — provider-limit quota pause (same day, 07:12 UTC+7)
+
+Follow-up on the live check: job #10 (owner's own chat message "Bos") also
+failed with the same backend `provider.chatgpt-limit`. Classification landed:
+idle outcomes reporting provider limit/quota now raise RetryLater(900) — the
+job defers for 15 minutes and resumes; ordinary provider failures still fail
+durably. TDD: 3 new classification tests added first (test_opencode_completion
+needs RetryLater), then implemented; suite 369 OK, all green.
+
+Deploy: ./stop.sh + supervise.sh restart; single supervisor/poller; bot online
+offset 19758732. Note: until the OpenCode-side quota resets, deferred jobs
+will re-attempt every 15 minutes and keep parking quota pauses durably.
